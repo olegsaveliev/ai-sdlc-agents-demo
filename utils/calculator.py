@@ -25,25 +25,3 @@ def divide(a, b):
     if b == 0:
         raise ValueError("Cannot divide by zero")
     return a / b
-```
-
-5. **Scroll down**
-6. Keep **"Commit directly to the feature/calculator branch"** selected
-7. Click **"Commit changes"**
-
----
-
-## 📝 **STEP 4: Create Pull Request**
-
-1. After committing, you'll see a yellow banner at the top: **"feature/calculator had recent pushes"**
-2. Click the green **"Compare & pull request"** button
-3. **Title:** `Add calculator module`
-4. **Body:**
-```
-Implements basic calculator functionality as requested in #[issue_number]
-
-Features:
-- Addition
-- Subtraction  
-- Division with zero-check
-- Type validation for all operations
