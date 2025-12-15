@@ -40,6 +40,8 @@ jobs:
         continue-on-error: true
         run: |
           if [ -f "tests/test_generated.py" ]; then
+            # Add current directory to Python path so imports work
+            export PYTHONPATH="${PYTHONPATH}:$(pwd)"
             pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1 || true
           else
             echo "No tests generated" > test_results.txt
