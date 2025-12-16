@@ -223,8 +223,6 @@ def main():
     
     if not changes:
         print("⚠️ No changes found")
-        test_summary = "No files to analyze"
-        post_qa_analysis(test_summary)
         return
     
     print(f"📝 Found {len(changes)} changed files")
@@ -234,27 +232,12 @@ def main():
     
     if test_code:
         save_tests(test_code)
-        test_summary = f"Generated test suite ({len(test_code)} characters)"
-        print(f"✅ {test_summary}")
+        print(f"✅ Generated comprehensive test suite ({len(test_code)} characters)")
     else:
-        test_summary = "No Python files requiring tests"
-        print(f"⚠️ {test_summary}")
-    
-    # Read test results if available
-    try:
-        with open('test_results.txt', 'r') as f:
-            test_results = f.read()
-    except FileNotFoundError:
-        test_results = "Tests will run in next workflow step"
-    
-    # Post to GitHub
-    post_qa_analysis(test_summary)
-    
-    # Post to Notion
-    print("📝 Posting to Notion...")
-    post_to_notion(pr_title, PR_NUMBER, test_summary, test_results)
+        print(f"⚠️ No Python files requiring tests")
     
     print("✅ QA Agent completed successfully!")
+    print("Note: GitHub comment and Notion post will be done in the next workflow step")
 
 if __name__ == "__main__":
     main()
