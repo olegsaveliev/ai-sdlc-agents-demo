@@ -33,6 +33,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
           python agents/pm_agent.py
       
