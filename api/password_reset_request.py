@@ -7,7 +7,7 @@ Implements the password reset request flow for issue #29
 import time
 from datetime import datetime, timedelta
 from typing import Dict, Optional
-from password_reset import PasswordResetManager
+from api.password_reset import PasswordResetManager
 
 
 class RateLimiter:
