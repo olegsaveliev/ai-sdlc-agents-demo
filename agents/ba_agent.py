@@ -7,6 +7,8 @@ ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
 GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
 ISSUE_NUMBER = os.environ['ISSUE_NUMBER']
+NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
+NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
 
 def get_issue_details():
     """Fetch issue details from GitHub"""
@@ -46,6 +48,67 @@ Format your response as a well-structured markdown document."""
     
     return message.content[0].text
 
+def post_to_notion(issue_title, issue_number, analysis):
+    """Post BA analysis to Notion database"""
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        print("⚠️ Notion credentials not configured, skipping Notion post")
+        return
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    
+    # Truncate analysis if too long (Notion has limits)
+    truncated_analysis = analysis[:1900] if len(analysis) > 1900 else analysis
+    
+    data = {
+        "parent": {"database_id": NOTION_DATABASE_ID},
+        "properties": {
+            "Name": {
+                "title": [{"text": {"content": f"BA Analysis: {issue_title[:80]}"}}]
+            },
+            "Agent Type": {
+                "select": {"name": "BA"}
+            },
+            "Issue/PR Number": {
+                "number": int(issue_number)
+            },
+            "Status": {
+                "select": {"name": "Complete"}
+            }
+        },
+        "children": [
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": "Business Analysis"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": truncated_analysis}}]
+                }
+            }
+        ]
+    }
+    
+    response = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=headers,
+        json=data
+    )
+    
+    if response.status_code == 200:
+        print(f"✅ Posted to Notion successfully!")
+    else:
+        print(f"⚠️ Notion post failed: {response.status_code}")
+        print(response.text)
+
 def update_issue(analysis):
     """Update the GitHub issue with BA analysis"""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/issues/{ISSUE_NUMBER}"
@@ -63,9 +126,9 @@ def update_issue(analysis):
     response = requests.post(comment_url, headers=headers, json=comment_body)
     
     if response.status_code == 201:
-        print(f"✅ Comment posted successfully")
+        print(f"✅ Comment posted to GitHub successfully")
     else:
-        print(f"⚠️ Comment posting failed: {response.status_code}")
+        print(f"⚠️ GitHub comment failed: {response.status_code}")
     
     # Add labels
     labels_data = {"labels": ["analyzed", "ready-for-dev"]}
@@ -84,8 +147,13 @@ def main():
     analysis = analyze_requirements(issue['title'], issue.get('body', ''))
     print(f"✅ Analysis complete ({len(analysis)} characters)")
     
-    # Update issue
+    # Update GitHub
     update_issue(analysis)
+    
+    # Post to Notion
+    print("📝 Posting to Notion...")
+    post_to_notion(issue['title'], ISSUE_NUMBER, analysis)
+    
     print("✅ BA Agent completed successfully!")
 
 if __name__ == "__main__":
