@@ -6,9 +6,15 @@ import requests
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
 GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
-PR_NUMBER = os.environ['PR_NUMBER']
+PR_NUMBER = os.environ.get('PR_NUMBER')
 NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
 NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
+
+# Validate PR_NUMBER
+if not PR_NUMBER or PR_NUMBER == '':
+    print("❌ PR_NUMBER not set. This workflow must be triggered by a pull request.")
+    print("Exiting gracefully...")
+    exit(0)
 
 def get_pr_changes():
     """Fetch PR file changes"""
