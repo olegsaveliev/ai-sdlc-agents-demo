@@ -31,6 +31,8 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: |
           python agents/pm_agent.py
       
@@ -38,8 +40,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: |
           python3 << 'PYTHON_SCRIPT'
           import os
@@ -74,7 +74,7 @@ jobs:
           )
           
           if response.status_code == 201:
-              print("✅ Standup report created!")
+              print("✅ Standup report issue created!")
           else:
-              print(f"❌ Failed: {response.status_code}")
+              print(f"⚠️ Failed to create issue: {response.status_code}")
           PYTHON_SCRIPT
