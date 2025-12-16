@@ -119,27 +119,5 @@ class PasswordResetManager:
         
         for token in expired:
             del self.reset_tokens[token]
-        
+
         return {'removed': len(expired)}
-```
-
-5. Scroll down, keep **"Commit directly to the feature/password-reset branch"** selected
-6. Click **Commit changes**
-
----
-
-## 📝 **STEP 3: Create the Pull Request**
-
-1. You'll see a yellow banner: **"feature/password-reset had recent pushes"**
-2. Click **"Compare & pull request"**
-3. **Title:** `Add password reset functionality`
-4. **Body:**
-```
-Implements password reset feature as described in #[issue_number]
-
-Changes:
-- Added PasswordResetManager class
-- Token generation with 1-hour expiry
-- Token validation and expiry checking
-- Secure password reset flow
-- Automatic cleanup of expired tokens
