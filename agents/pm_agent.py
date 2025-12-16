@@ -7,6 +7,8 @@ from datetime import datetime, timedelta
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
 GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
+NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
+NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
 
 def get_team_activity():
     """Fetch recent team activity from GitHub"""
@@ -15,7 +17,6 @@ def get_team_activity():
         "Accept": "application/vnd.github+json"
     }
     
-    # Calculate date range (last 24 hours)
     since = (datetime.now() - timedelta(days=1)).isoformat()
     
     activity = {
@@ -49,7 +50,7 @@ def get_project_metrics(activity):
     }
     
     for issue in activity['issues']:
-        if 'pull_request' not in issue:  # Exclude PRs from issues
+        if 'pull_request' not in issue:
             if issue['state'] == 'open':
                 metrics['open_issues'] += 1
                 if any(label['name'] == 'in-progress' for label in issue.get('labels', [])):
@@ -71,7 +72,6 @@ def generate_standup_report(activity, metrics):
     """Use Claude to generate a PM standup report"""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    # Prepare activity summary
     recent_issues = [
         f"- {issue['title']} (#{issue['number']}) - {issue['state']}"
         for issue in activity['issues'][:10]
@@ -117,6 +117,95 @@ Use markdown formatting. Be concise but insightful. Focus on actionable informat
     
     return message.content[0].text
 
+def post_to_notion(report, metrics):
+    """Post PM report to Notion"""
+    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
+        print("⚠️ Notion credentials not configured, skipping Notion post")
+        return
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    
+    today = datetime.now().strftime('%Y-%m-%d')
+    truncated_report = report[:1800] if len(report) > 1800 else report
+    
+    data = {
+        "parent": {"database_id": NOTION_DATABASE_ID},
+        "properties": {
+            "Name": {
+                "title": [{"text": {"content": f"PM Standup - {today}"}}]
+            },
+            "Agent Type": {
+                "select": {"name": "PM"}
+            },
+            "Issue/PR Number": {
+                "number": 0
+            },
+            "Status": {
+                "select": {"name": "Complete"}
+            }
+        },
+        "children": [
+            {
+                "object": "block",
+                "type": "heading_2",
+                "heading_2": {
+                    "rich_text": [{"type": "text", "text": {"content": f"Daily Standup - {today}"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": "Metrics"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{"type": "text", "text": {"content": f"Open Issues: {metrics['open_issues']}"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "bulleted_list_item",
+                "bulleted_list_item": {
+                    "rich_text": [{"type": "text", "text": {"content": f"Merged PRs: {metrics['merged_prs']}"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "heading_3",
+                "heading_3": {
+                    "rich_text": [{"type": "text", "text": {"content": "Report"}}]
+                }
+            },
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": truncated_report}}]
+                }
+            }
+        ]
+    }
+    
+    response = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=headers,
+        json=data
+    )
+    
+    if response.status_code == 200:
+        print(f"✅ Posted to Notion successfully!")
+    else:
+        print(f"⚠️ Notion post failed: {response.status_code}")
+        print(response.text)
+
 def save_report(report):
     """Save standup report to file"""
     with open('standup_report.md', 'w') as f:
@@ -144,6 +233,11 @@ def main():
     
     # Save report
     save_report(report)
+    
+    # Post to Notion
+    print("📝 Posting to Notion...")
+    post_to_notion(report, metrics)
+    
     print("✅ PM Agent completed successfully!")
 
 if __name__ == "__main__":
