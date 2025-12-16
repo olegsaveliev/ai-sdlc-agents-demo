@@ -37,5 +37,6 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number || github.event.inputs.issue_number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
           python agents/ba_agent.py
