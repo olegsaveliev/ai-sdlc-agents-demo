@@ -114,9 +114,9 @@ class PasswordResetManager:
         current_time = datetime.now()
         expired = [
             token for token, data in self.reset_tokens.items()
-            if current_time > data['expiry']
+            if 'expiry' in data and current_time > data['expiry']
         ]
-        
+
         for token in expired:
             del self.reset_tokens[token]
 
