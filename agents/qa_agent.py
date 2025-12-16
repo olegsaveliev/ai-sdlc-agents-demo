@@ -1,6 +1,7 @@
 import os
 import anthropic
 import requests
+import time
 
 # Configuration
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
@@ -9,11 +10,15 @@ GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
 PR_NUMBER = os.environ.get('PR_NUMBER')
 NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
 NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
+NOTION_METRICS_DB_ID = os.environ.get('NOTION_METRICS_DB_ID')
+
+# Metrics tracking
+start_time = time.time()
+tokens_used = 0
 
 # Validate PR_NUMBER
 if not PR_NUMBER or PR_NUMBER == '':
     print("❌ PR_NUMBER not set. This workflow must be triggered by a pull request.")
-    print("Exiting gracefully...")
     exit(0)
 
 def get_pr_changes():
@@ -27,7 +32,7 @@ def get_pr_changes():
     data = response.json()
     
     if isinstance(data, dict):
-        print(f"Warning: Unexpected response format: {data}")
+        print(f"Warning: Unexpected response: {data}")
         return []
     
     return data
@@ -44,6 +49,7 @@ def get_pr_details():
 
 def generate_tests(changes):
     """Use Claude to generate test cases"""
+    global tokens_used
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
     files_content = []
@@ -80,6 +86,9 @@ Generate ONLY 3 tests. Keep it simple."""
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
+    
+    # Track token usage
+    tokens_used = message.usage.input_tokens + message.usage.output_tokens
     
     return message.content[0].text
 
@@ -120,11 +129,18 @@ def test_code_analysis_complete():
     
     print(f"✅ Tests saved to tests/test_generated.py")
 
-def post_to_notion(pr_title, pr_number, test_summary, test_results):
-    """Post QA results to Notion"""
-    if not NOTION_TOKEN or not NOTION_DATABASE_ID:
-        print("⚠️ Notion credentials not configured, skipping Notion post")
+def log_metrics(status="Success", error_message=None):
+    """Log performance metrics to Notion"""
+    if not NOTION_TOKEN or not NOTION_METRICS_DB_ID:
+        print("⚠️ Metrics database not configured, skipping metrics logging")
         return
+    
+    execution_time = round(time.time() - start_time, 2)
+    
+    # Calculate cost (Claude Sonnet 4 pricing)
+    input_cost = (tokens_used * 0.7) * (3.00 / 1_000_000)
+    output_cost = (tokens_used * 0.3) * (15.00 / 1_000_000)
+    cost = round(input_cost + output_cost, 4)
     
     headers = {
         "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -132,112 +148,80 @@ def post_to_notion(pr_title, pr_number, test_summary, test_results):
         "Notion-Version": "2022-06-28"
     }
     
-    # Truncate results if too long
-    truncated_results = test_results[:1500] if len(test_results) > 1500 else test_results
+    properties = {
+        "Name": {
+            "title": [{"text": {"content": f"QA - PR #{PR_NUMBER}"}}]
+        },
+        "Agent": {"select": {"name": "QA"}},
+        "Execution Time": {"number": execution_time},
+        "Tokens Used": {"number": tokens_used},
+        "Cost": {"number": cost},
+        "Status": {"select": {"name": status}},
+        "Issue/PR Number": {"number": int(PR_NUMBER)}
+    }
+    
+    if error_message:
+        properties["Error Message"] = {
+            "rich_text": [{"text": {"content": str(error_message)[:2000]}}]
+        }
     
     data = {
-        "parent": {"database_id": NOTION_DATABASE_ID},
-        "properties": {
-            "Name": {
-                "title": [{"text": {"content": f"QA Report: {pr_title[:80]}"}}]
-            },
-            "Agent Type": {
-                "select": {"name": "QA"}
-            },
-            "Issue/PR Number": {
-                "number": int(pr_number)
-            },
-            "Status": {
-                "select": {"name": "Complete"}
-            }
-        },
-        "children": [
-            {
-                "object": "block",
-                "type": "heading_2",
-                "heading_2": {
-                    "rich_text": [{"type": "text", "text": {"content": "QA Test Report"}}]
-                }
-            },
-            {
-                "object": "block",
-                "type": "paragraph",
-                "paragraph": {
-                    "rich_text": [{"type": "text", "text": {"content": f"Summary: {test_summary}"}}]
-                }
-            },
-            {
-                "object": "block",
-                "type": "code",
-                "code": {
-                    "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
-                    "language": "plain text"
-                }
-            }
-        ]
+        "parent": {"database_id": NOTION_METRICS_DB_ID},
+        "properties": properties
     }
     
-    response = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers=headers,
-        json=data
-    )
-    
-    if response.status_code == 200:
-        print(f"✅ Posted to Notion successfully!")
-    else:
-        print(f"⚠️ Notion post failed: {response.status_code}")
-
-def post_qa_analysis(test_summary):
-    """Post QA analysis to PR"""
-    url = f"https://api.github.com/repos/{GITHUB_REPO}/issues/{PR_NUMBER}/comments"
-    headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
-    }
-    
-    body = f"""## 🧪 QA Agent Analysis
-
-**Test Coverage Generated:**
-{test_summary}
-
-**Next Steps:**
-- ✅ Automated tests have been generated
-- 🔍 Review test cases for completeness
-- 🚀 Tests will run automatically
-
----
-*Generated by QA Agent*"""
-    
-    requests.post(url, headers=headers, json={"body": body})
+    try:
+        response = requests.post(
+            "https://api.notion.com/v1/pages",
+            headers=headers,
+            json=data,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"📊 Metrics logged: {execution_time}s, {tokens_used} tokens, ${cost}")
+        else:
+            print(f"⚠️ Metrics logging failed: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Metrics error: {e}")
 
 def main():
     print(f"🤖 QA Agent starting for PR #{PR_NUMBER}...")
     
-    # Get PR details
-    pr_details = get_pr_details()
-    pr_title = pr_details.get('title', 'Unknown PR')
-    
-    # Get PR changes
-    changes = get_pr_changes()
-    
-    if not changes:
-        print("⚠️ No changes found")
-        return
-    
-    print(f"📝 Found {len(changes)} changed files")
-    
-    # Generate tests
-    test_code = generate_tests(changes)
-    
-    if test_code:
-        save_tests(test_code)
-        print(f"✅ Generated comprehensive test suite ({len(test_code)} characters)")
-    else:
-        print(f"⚠️ No Python files requiring tests")
-    
-    print("✅ QA Agent completed successfully!")
-    print("Note: GitHub comment and Notion post will be done in the next workflow step")
+    try:
+        # Get PR details
+        pr_details = get_pr_details()
+        pr_title = pr_details.get('title', 'Unknown PR')
+        
+        # Get PR changes
+        changes = get_pr_changes()
+        
+        if not changes:
+            print("⚠️ No changes found")
+            log_metrics(status="Success")
+            return
+        
+        print(f"📝 Found {len(changes)} changed files")
+        
+        # Generate tests
+        test_code = generate_tests(changes)
+        
+        if test_code:
+            save_tests(test_code)
+            print(f"✅ Generated comprehensive test suite ({len(test_code)} characters)")
+        else:
+            print(f"⚠️ No Python files requiring tests")
+        
+        # Log metrics
+        log_metrics(status="Success")
+        
+        print("✅ QA Agent completed successfully!")
+        print("Note: GitHub comment and Notion post will be done in the next workflow step")
+        
+    except Exception as e:
+        print(f"❌ QA Agent failed: {e}")
+        log_metrics(status="Failed", error_message=str(e))
+        raise
 
 if __name__ == "__main__":
     main()
