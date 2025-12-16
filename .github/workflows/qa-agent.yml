@@ -25,7 +25,7 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install anthropic requests pytest
+          pip install anthropic requests pytest dnspython
       
       - name: Run QA Agent
         if: github.event.pull_request.number
