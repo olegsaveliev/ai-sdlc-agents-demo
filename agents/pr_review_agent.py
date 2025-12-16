@@ -1,6 +1,7 @@
 import os
 import anthropic
 import requests
+import time
 
 # Configuration
 ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
@@ -9,6 +10,11 @@ GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
 PR_NUMBER = os.environ.get('PR_NUMBER')
 NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
 NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
+NOTION_METRICS_DB_ID = os.environ.get('NOTION_METRICS_DB_ID')
+
+# Metrics tracking
+start_time = time.time()
+tokens_used = 0
 
 # Validate PR_NUMBER
 if not PR_NUMBER or PR_NUMBER == '':
@@ -49,15 +55,15 @@ def get_pr_diff():
         "Accept": "application/vnd.github.v3.diff"
     }
     response = requests.get(url, headers=headers)
-    return response.text[:4000]  # Limit to 4000 chars
+    return response.text[:4000]
 
 def review_code_with_claude(pr_details, files, diff):
     """Use Claude to review the code changes"""
+    global tokens_used
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     
-    # Prepare file summary
     file_summary = []
-    for file in files[:5]:  # Limit to 5 files
+    for file in files[:5]:
         file_summary.append(f"- {file['filename']}: +{file['additions']} -{file['deletions']} lines")
     
     prompt = f"""You are a Senior Code Reviewer AI agent. Review this pull request and provide constructive feedback.
@@ -97,6 +103,9 @@ Format your response as structured markdown with clear sections."""
         max_tokens=2500,
         messages=[{"role": "user", "content": prompt}]
     )
+    
+    # Track token usage
+    tokens_used = message.usage.input_tokens + message.usage.output_tokens
     
     return message.content[0].text
 
@@ -140,7 +149,6 @@ def post_to_notion(pr_title, pr_number, review, pr_url):
         "Notion-Version": "2022-06-28"
     }
     
-    # Truncate review if too long
     truncated_review = review[:1800] if len(review) > 1800 else review
     
     data = {
@@ -202,41 +210,106 @@ def post_to_notion(pr_title, pr_number, review, pr_url):
         print("✅ Posted to Notion successfully!")
     else:
         print(f"⚠️ Notion post failed: {response.status_code}")
-        print(response.text)
+
+def log_metrics(status="Success", error_message=None):
+    """Log performance metrics to Notion"""
+    if not NOTION_TOKEN or not NOTION_METRICS_DB_ID:
+        print("⚠️ Metrics database not configured, skipping metrics logging")
+        return
+    
+    execution_time = round(time.time() - start_time, 2)
+    
+    # Calculate cost
+    input_cost = (tokens_used * 0.7) * (3.00 / 1_000_000)
+    output_cost = (tokens_used * 0.3) * (15.00 / 1_000_000)
+    cost = round(input_cost + output_cost, 4)
+    
+    headers = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28"
+    }
+    
+    properties = {
+        "Name": {
+            "title": [{"text": {"content": f"PR Review - PR #{PR_NUMBER}"}}]
+        },
+        "Agent": {"select": {"name": "PR Review"}},
+        "Execution Time": {"number": execution_time},
+        "Tokens Used": {"number": tokens_used},
+        "Cost": {"number": cost},
+        "Status": {"select": {"name": status}},
+        "Issue/PR Number": {"number": int(PR_NUMBER)}
+    }
+    
+    if error_message:
+        properties["Error Message"] = {
+            "rich_text": [{"text": {"content": str(error_message)[:2000]}}]
+        }
+    
+    data = {
+        "parent": {"database_id": NOTION_METRICS_DB_ID},
+        "properties": properties
+    }
+    
+    try:
+        response = requests.post(
+            "https://api.notion.com/v1/pages",
+            headers=headers,
+            json=data,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            print(f"📊 Metrics logged: {execution_time}s, {tokens_used} tokens, ${cost}")
+        else:
+            print(f"⚠️ Metrics logging failed: {response.status_code}")
+    except Exception as e:
+        print(f"⚠️ Metrics error: {e}")
 
 def main():
     print(f"🤖 PR Review Agent starting for PR #{PR_NUMBER}...")
     
-    # Get PR details
-    pr_details = get_pr_details()
-    pr_title = pr_details.get('title', 'Unknown PR')
-    pr_url = pr_details.get('html_url', '')
-    print(f"📝 Reviewing: {pr_title}")
-    
-    # Get changed files
-    files = get_pr_files()
-    if not files:
-        print("⚠️ No files to review")
-        return
-    
-    print(f"📂 Found {len(files)} changed files")
-    
-    # Get diff
-    diff = get_pr_diff()
-    
-    # Review with Claude
-    print("🔍 Analyzing code with Claude...")
-    review = review_code_with_claude(pr_details, files, diff)
-    print(f"✅ Review complete ({len(review)} characters)")
-    
-    # Post to GitHub
-    post_review_comment(pr_details, review)
-    
-    # Post to Notion
-    print("📝 Posting to Notion...")
-    post_to_notion(pr_title, PR_NUMBER, review, pr_url)
-    
-    print("✅ PR Review Agent completed successfully!")
+    try:
+        # Get PR details
+        pr_details = get_pr_details()
+        pr_title = pr_details.get('title', 'Unknown PR')
+        pr_url = pr_details.get('html_url', '')
+        print(f"📝 Reviewing: {pr_title}")
+        
+        # Get changed files
+        files = get_pr_files()
+        if not files:
+            print("⚠️ No files to review")
+            log_metrics(status="Success")
+            return
+        
+        print(f"📂 Found {len(files)} changed files")
+        
+        # Get diff
+        diff = get_pr_diff()
+        
+        # Review with Claude
+        print("🔍 Analyzing code with Claude...")
+        review = review_code_with_claude(pr_details, files, diff)
+        print(f"✅ Review complete ({len(review)} characters)")
+        
+        # Post to GitHub
+        post_review_comment(pr_details, review)
+        
+        # Post to Notion
+        print("📝 Posting to Notion...")
+        post_to_notion(pr_title, PR_NUMBER, review, pr_url)
+        
+        # Log metrics
+        log_metrics(status="Success")
+        
+        print("✅ PR Review Agent completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ PR Review Agent failed: {e}")
+        log_metrics(status="Failed", error_message=str(e))
+        raise
 
 if __name__ == "__main__":
     main()
