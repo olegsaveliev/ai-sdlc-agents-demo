@@ -36,6 +36,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
           python agents/qa_agent.py
       
@@ -61,13 +62,58 @@ jobs:
           python3 << 'PYTHON_SCRIPT'
           import os
           import requests
+          import re
           
           # Read test results
           try:
               with open('test_results.txt', 'r') as f:
-                  test_results = f.read()[:2000]
+                  test_results = f.read()
           except FileNotFoundError:
               test_results = "No test results available"
+          
+          # Parse test metrics
+          def parse_test_metrics(results):
+              metrics = {
+                  'total': 0,
+                  'passed': 0,
+                  'failed': 0,
+                  'errors': 0,
+                  'skipped': 0,
+                  'completion_pct': 0,
+                  'test_names': []
+              }
+              
+              passed_match = re.search(r'(\d+) passed', results)
+              failed_match = re.search(r'(\d+) failed', results)
+              error_match = re.search(r'(\d+) error', results)
+              skipped_match = re.search(r'(\d+) skipped', results)
+              
+              if passed_match:
+                  metrics['passed'] = int(passed_match.group(1))
+              if failed_match:
+                  metrics['failed'] = int(failed_match.group(1))
+              if error_match:
+                  metrics['errors'] = int(error_match.group(1))
+              if skipped_match:
+                  metrics['skipped'] = int(skipped_match.group(1))
+              
+              metrics['total'] = metrics['passed'] + metrics['failed'] + metrics['errors'] + metrics['skipped']
+              
+              if metrics['total'] > 0:
+                  metrics['completion_pct'] = round((metrics['passed'] / metrics['total']) * 100, 1)
+              
+              test_pattern = r'(test_\w+)\s+(PASSED|FAILED|ERROR|SKIPPED)'
+              for match in re.finditer(test_pattern, results):
+                  test_name = match.group(1)
+                  status = match.group(2)
+                  metrics['test_names'].append({
+                      'name': test_name,
+                      'status': status
+                  })
+              
+              return metrics
+          
+          metrics = parse_test_metrics(test_results)
           
           # Get PR details
           pr_number = os.environ['PR_NUMBER']
@@ -79,7 +125,6 @@ jobs:
               "Accept": "application/vnd.github+json"
           }
           
-          # Get PR title
           pr_response = requests.get(
               f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
               headers=headers
@@ -91,13 +136,18 @@ jobs:
           
           **Automated Test Generation Complete**
           
-          Tests have been generated and executed for this PR.
+          ### 📊 Test Summary
+          - **Total Tests:** {metrics['total']}
+          - **Passed:** ✅ {metrics['passed']}
+          - **Failed:** ❌ {metrics['failed']}
+          - **Errors:** 🔴 {metrics['errors']}
+          - **Completion:** {metrics['completion_pct']}%
           
           <details>
-          <summary>📊 Test Results</summary>
+          <summary>📋 Detailed Results</summary>
           
           ```
-          {test_results}
+          {test_results[:2000]}
           ```
           </details>
           
@@ -115,7 +165,7 @@ jobs:
           else:
               print(f"⚠️ GitHub post failed: {gh_response.status_code}")
           
-          # Post to Notion
+          # Post to Notion with detailed metrics
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
@@ -128,13 +178,70 @@ jobs:
                   "Notion-Version": "2022-06-28"
               }
               
+              test_breakdown = []
+              
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "heading_2",
+                  "heading_2": {
+                      "rich_text": [{"type": "text", "text": {"content": "📊 Test Execution Summary"}}]
+                  }
+              })
+              
+              metrics_text = f"Total: {metrics['total']} | Passed: {metrics['passed']} | Failed: {metrics['failed']} | Completion: {metrics['completion_pct']}%"
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "callout",
+                  "callout": {
+                      "rich_text": [{"type": "text", "text": {"content": metrics_text}}],
+                      "icon": {"emoji": "📈"}
+                  }
+              })
+              
+              if metrics['test_names']:
+                  test_breakdown.append({
+                      "object": "block",
+                      "type": "heading_3",
+                      "heading_3": {
+                          "rich_text": [{"type": "text", "text": {"content": "Test Cases Executed"}}]
+                      }
+                  })
+                  
+                  for test in metrics['test_names'][:20]:
+                      emoji = "✅" if test['status'] == "PASSED" else "❌" if test['status'] == "FAILED" else "🔴"
+                      test_text = f"{emoji} {test['name']} - {test['status']}"
+                      
+                      test_breakdown.append({
+                          "object": "block",
+                          "type": "bulleted_list_item",
+                          "bulleted_list_item": {
+                              "rich_text": [{"type": "text", "text": {"content": test_text}}]
+                          }
+                      })
+              
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "heading_3",
+                  "heading_3": {
+                      "rich_text": [{"type": "text", "text": {"content": "Raw Test Output"}}]
+                  }
+              })
+              
               truncated_results = test_results[:1500] if len(test_results) > 1500 else test_results
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "code",
+                  "code": {
+                      "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
+                      "language": "plain text"
+                  }
+              })
               
               notion_data = {
                   "parent": {"database_id": notion_db},
                   "properties": {
                       "Name": {
-                          "title": [{"text": {"content": f"QA Report: {pr_title[:80]}"}}]
+                          "title": [{"text": {"content": f"QA Report: {pr_title[:70]} ({metrics['completion_pct']}%)"}}]
                       },
                       "Agent Type": {
                           "select": {"name": "QA"}
@@ -151,7 +258,7 @@ jobs:
                           "object": "block",
                           "type": "heading_2",
                           "heading_2": {
-                              "rich_text": [{"type": "text", "text": {"content": "QA Test Report"}}]
+                              "rich_text": [{"type": "text", "text": {"content": "🧪 QA Test Report"}}]
                           }
                       },
                       {
@@ -163,13 +270,10 @@ jobs:
                       },
                       {
                           "object": "block",
-                          "type": "code",
-                          "code": {
-                              "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
-                              "language": "plain text"
-                          }
+                          "type": "divider",
+                          "divider": {}
                       }
-                  ]
+                  ] + test_breakdown
               }
               
               notion_response = requests.post(
@@ -180,9 +284,12 @@ jobs:
               
               if notion_response.status_code == 200:
                   print("✅ Posted to Notion successfully!")
+                  print(f"   - Total Tests: {metrics['total']}")
+                  print(f"   - Passed: {metrics['passed']}")
+                  print(f"   - Completion: {metrics['completion_pct']}%")
               else:
                   print(f"⚠️ Notion post failed: {notion_response.status_code}")
-                  print(f"Response: {notion_response.text}")
+                  print(notion_response.text)
           else:
               print("⚠️ Notion credentials not configured")
           PYTHON_SCRIPT
