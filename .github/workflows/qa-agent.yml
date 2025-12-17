@@ -26,6 +26,11 @@ jobs:
       - name: Install dependencies
         run: |
           pip install anthropic requests pytest dnspython
+
+      - name: Copy Slack notifications module
+        run: |
+          cp slack_notifications.py agents/ || echo "slack_notifications.py not found in root"
+      
       
       - name: Run QA Agent
         if: github.event.pull_request.number
