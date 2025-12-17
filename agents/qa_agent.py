@@ -56,6 +56,7 @@ def get_pr_changes():
         
         return data
     except Exception as e:
+        print(f"❌ Error fetching PR changes: {e}")
         if SLACK_ENABLED:
             notify_agent_error(
                 agent_name="QA Agent",
@@ -77,6 +78,7 @@ def get_pr_details():
         response = requests.get(url, headers=headers)
         return response.json()
     except Exception as e:
+        print(f"❌ Error fetching PR details: {e}")
         if SLACK_ENABLED:
             notify_agent_error(
                 agent_name="QA Agent",
@@ -138,6 +140,7 @@ Generate ONLY 3 tests. Keep it simple."""
         return test_code
     
     except Exception as e:
+        print(f"❌ Error generating tests: {e}")
         if SLACK_ENABLED:
             notify_agent_error(
                 agent_name="QA Agent",
@@ -280,6 +283,7 @@ def send_slack_summary(pr_title):
             cost=cost,
             files_analyzed=files_analyzed
         )
+        print("✅ Slack notification sent!")
     except Exception as e:
         print(f"⚠️ Failed to send Slack notification: {e}")
 
