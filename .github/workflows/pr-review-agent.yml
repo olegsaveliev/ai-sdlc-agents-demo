@@ -36,4 +36,4 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
-          python agents/pr_review_agent.py
+          python agents/pr_review_agent_updated.py
