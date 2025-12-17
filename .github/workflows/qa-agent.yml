@@ -38,7 +38,7 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
-          python agents/qa_agent_updated.py
+          python agents/qa_agent.py
       
       - name: Run Generated Tests
         continue-on-error: true
