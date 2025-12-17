@@ -25,17 +25,6 @@ def notify_qa_complete(
 ):
     """
     Send QA Agent completion notification to Slack with test results
-    
-    Args:
-        pr_number: Pull request number
-        pr_title: PR title
-        tests_generated: Number of tests created
-        tests_passed: Number of passing tests
-        tests_failed: Number of failing tests
-        execution_time: Agent runtime in seconds
-        tokens_used: Claude tokens consumed
-        cost: API cost in dollars
-        files_analyzed: Number of files analyzed
     """
     slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
     
@@ -169,17 +158,6 @@ def notify_pr_review_complete(
 ):
     """
     Send PR Review Agent completion notification to Slack
-    
-    Args:
-        pr_number: Pull request number
-        pr_title: PR title
-        files_reviewed: Number of files reviewed
-        issues_found: Number of issues identified
-        suggestions_made: Number of suggestions provided
-        execution_time: Agent runtime in seconds
-        tokens_used: Claude tokens consumed
-        cost: API cost in dollars
-        review_summary: Brief summary of the review (first 200 chars)
     """
     slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
     
@@ -307,12 +285,6 @@ def notify_agent_error(
 ):
     """
     Send error notification to Slack when agent fails
-    
-    Args:
-        agent_name: Name of the agent (e.g., "QA Agent", "PR Review Agent")
-        pr_number: PR number if applicable
-        error_message: Error message
-        step: Step where error occurred
     """
     slack_webhook = os.environ.get('SLACK_WEBHOOK_URL')
     
