@@ -1,21 +1,35 @@
 name: QA Agent - Auto Test Generation
 
 on:
+  # Run on push to any branch (including feature branches)
+  push:
+    branches:
+      - '**'        # All branches
+      - '!main'     # Exclude main branch (optional - remove if you want it to run on main too)
+  
+  # Run on pull requests
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
+  
+  # Allow manual trigger
   workflow_dispatch:
+
 jobs:
   qa-agent:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: write
+      issues: write
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          # For PR: checkout the PR branch
+          # For push: checkout the pushed branch
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 0  # Get full history for better context
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,50 +38,101 @@ jobs:
       
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install anthropic requests pytest dnspython
+          
+          # Install app dependencies if requirements.txt exists
+          if [ -f "requirements.txt" ]; then
+            echo "📦 Installing application dependencies..."
+            pip install -r requirements.txt
+          else
+            echo "ℹ️ No requirements.txt found - skipping app dependencies"
+          fi
 
       - name: Copy Slack notifications module
         run: |
-          cp slack_notifications.py agents/ || echo "slack_notifications.py not found in root"
+          if [ -f "slack_notifications.py" ]; then
+            cp slack_notifications.py agents/ || mkdir -p agents && cp slack_notifications.py agents/
+            echo "✅ Slack notifications module copied"
+          else
+            echo "⚠️ slack_notifications.py not found - skipping"
+          fi
       
+      - name: Determine PR number
+        id: pr_info
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+          else
+            # For push events, try to find associated PR
+            PR_NUMBER=$(gh pr list --head "${{ github.ref_name }}" --json number --jq '.[0].number' 2>/dev/null || echo "")
+            if [ -n "$PR_NUMBER" ]; then
+              echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+              echo "is_pr=true" >> $GITHUB_OUTPUT
+              echo "📌 Found associated PR #$PR_NUMBER"
+            else
+              echo "is_pr=false" >> $GITHUB_OUTPUT
+              echo "ℹ️ No PR associated with this push"
+            fi
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Run QA Agent
-        if: github.event.pull_request.number
+        if: steps.pr_info.outputs.is_pr == 'true' || github.event_name == 'push'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.pr_info.outputs.pr_number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          EVENT_TYPE: ${{ github.event_name }}
         run: |
-          python agents/qa_agent.py
+          echo "🤖 Running QA Agent..."
+          echo "Branch: $BRANCH_NAME"
+          echo "Event: $EVENT_TYPE"
+          
+          if [ -f "agents/qa_agent.py" ]; then
+            python agents/qa_agent.py
+          else
+            echo "⚠️ agents/qa_agent.py not found - skipping QA agent execution"
+          fi
       
       - name: Run Generated Tests
         continue-on-error: true
         run: |
           if [ -f "tests/test_generated.py" ]; then
+            echo "🧪 Running generated tests..."
             export PYTHONPATH="${PYTHONPATH}:$(pwd)"
             pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1 || true
+            echo "✅ Tests executed"
           else
-            echo "No tests generated" > test_results.txt
+            echo "ℹ️ No tests generated" > test_results.txt
           fi
       
-      - name: Post to GitHub and Notion
+      - name: Post Results to GitHub and Notion
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.pr_info.outputs.pr_number }}
+          IS_PR: ${{ steps.pr_info.outputs.is_pr }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          BRANCH_NAME: ${{ github.ref_name }}
+          EVENT_TYPE: ${{ github.event_name }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
           python3 << 'PYTHON_SCRIPT'
           import os
           import requests
           import re
+          import sys
           
           # Read test results
           try:
@@ -120,55 +185,81 @@ jobs:
           
           metrics = parse_test_metrics(test_results)
           
-          # Get PR details
-          pr_number = os.environ['PR_NUMBER']
+          # Get environment variables
           repo = os.environ['GITHUB_REPOSITORY']
           token = os.environ['GITHUB_TOKEN']
+          pr_number = os.environ.get('PR_NUMBER', '')
+          is_pr = os.environ.get('IS_PR', 'false')
+          branch_name = os.environ.get('BRANCH_NAME', 'unknown')
+          event_type = os.environ.get('EVENT_TYPE', 'unknown')
+          commit_sha = os.environ.get('COMMIT_SHA', '')[:7]
           
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json"
           }
           
-          pr_response = requests.get(
-              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
-              headers=headers
-          )
-          pr_title = pr_response.json().get('title', 'Unknown PR')
-          
-          # Post to GitHub
-          gh_comment = f"""## 🧪 QA Agent Report
-          
-          **Automated Test Generation Complete**
-          
-          ### 📊 Test Summary
-          - **Total Tests:** {metrics['total']}
-          - **Passed:** ✅ {metrics['passed']}
-          - **Failed:** ❌ {metrics['failed']}
-          - **Errors:** 🔴 {metrics['errors']}
-          - **Completion:** {metrics['completion_pct']}%
-          
-          <details>
-          <summary>📋 Detailed Results</summary>
-          
-          ```
-          {test_results[:2000]}
-          ```
-          </details>
-          
-          ---
-          *Generated by QA Agent*"""
-          
-          gh_response = requests.post(
-              f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-              headers=headers,
-              json={"body": gh_comment}
-          )
-          
-          if gh_response.status_code == 201:
-              print("✅ Posted to GitHub successfully!")
+          # Determine context
+          if is_pr == 'true' and pr_number:
+              context_title = f"PR #{pr_number}"
+              try:
+                  pr_response = requests.get(
+                      f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+                      headers=headers,
+                      timeout=10
+                  )
+                  pr_title = pr_response.json().get('title', 'Unknown PR')
+              except Exception as e:
+                  print(f"⚠️ Could not fetch PR details: {e}")
+                  pr_title = "Unknown PR"
           else:
-              print(f"⚠️ GitHub post failed: {gh_response.status_code}")
+              context_title = f"Branch: {branch_name}"
+              pr_title = f"Commit {commit_sha} on {branch_name}"
+          
+          # Post to GitHub (only if PR exists)
+          if is_pr == 'true' and pr_number:
+              gh_comment = f"""## 🧪 QA Agent Report
+          
+**Automated Test Generation Complete**
+**Branch:** `{branch_name}` | **Event:** `{event_type}` | **Commit:** `{commit_sha}`
+
+### 📊 Test Summary
+- **Total Tests:** {metrics['total']}
+- **Passed:** ✅ {metrics['passed']}
+- **Failed:** ❌ {metrics['failed']}
+- **Errors:** 🔴 {metrics['errors']}
+- **Completion:** {metrics['completion_pct']}%
+
+<details>
+<summary>📋 Detailed Results</summary>
+
+```
+{test_results[:2000]}
+```
+</details>
+
+---
+*Generated by QA Agent on {event_type}*"""
+              
+              try:
+                  gh_response = requests.post(
+                      f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                      headers=headers,
+                      json={"body": gh_comment},
+                      timeout=30
+                  )
+                  
+                  if gh_response.status_code == 201:
+                      print(f"✅ Posted to GitHub PR #{pr_number} successfully!")
+                  else:
+                      print(f"⚠️ GitHub post failed: {gh_response.status_code}")
+                      print(f"Response: {gh_response.text[:200]}")
+              except Exception as e:
+                  print(f"❌ Error posting to GitHub: {e}")
+          else:
+              print(f"ℹ️ Skipping GitHub comment (no PR associated)")
+              print(f"   Context: {context_title}")
+              print(f"   Tests: {metrics['passed']}/{metrics['total']} passed")
           
           # Post to Notion with detailed metrics
           notion_token = os.environ.get('NOTION_TOKEN')
@@ -200,6 +291,15 @@ jobs:
                   "callout": {
                       "rich_text": [{"type": "text", "text": {"content": metrics_text}}],
                       "icon": {"emoji": "📈"}
+                  }
+              })
+              
+              # Add branch/commit info
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                      "rich_text": [{"type": "text", "text": {"content": f"Branch: {branch_name} | Event: {event_type} | Commit: {commit_sha}"}}]
                   }
               })
               
@@ -246,13 +346,10 @@ jobs:
                   "parent": {"database_id": notion_db},
                   "properties": {
                       "Name": {
-                          "title": [{"text": {"content": f"QA Report: {pr_title[:70]} ({metrics['completion_pct']}%)"}}]
+                          "title": [{"text": {"content": f"QA: {pr_title[:70]} ({metrics['completion_pct']}%)"}}]
                       },
                       "Agent Type": {
                           "select": {"name": "QA"}
-                      },
-                      "Issue/PR Number": {
-                          "number": int(pr_number)
                       },
                       "Status": {
                           "select": {"name": "Complete"}
@@ -270,7 +367,7 @@ jobs:
                           "object": "block",
                           "type": "paragraph",
                           "paragraph": {
-                              "rich_text": [{"type": "text", "text": {"content": f"PR: {pr_title}"}}]
+                              "rich_text": [{"type": "text", "text": {"content": pr_title}}]
                           }
                       },
                       {
@@ -281,20 +378,45 @@ jobs:
                   ] + test_breakdown
               }
               
-              notion_response = requests.post(
-                  "https://api.notion.com/v1/pages",
-                  headers=notion_headers,
-                  json=notion_data
-              )
+              # Add PR number if available
+              if pr_number:
+                  try:
+                      notion_data["properties"]["Issue/PR Number"] = {
+                          "number": int(pr_number)
+                      }
+                  except ValueError:
+                      pass
               
-              if notion_response.status_code == 200:
-                  print("✅ Posted to Notion successfully!")
-                  print(f"   - Total Tests: {metrics['total']}")
-                  print(f"   - Passed: {metrics['passed']}")
-                  print(f"   - Completion: {metrics['completion_pct']}%")
-              else:
-                  print(f"⚠️ Notion post failed: {notion_response.status_code}")
-                  print(notion_response.text)
+              try:
+                  notion_response = requests.post(
+                      "https://api.notion.com/v1/pages",
+                      headers=notion_headers,
+                      json=notion_data,
+                      timeout=30
+                  )
+                  
+                  if notion_response.status_code == 200:
+                      print("✅ Posted to Notion successfully!")
+                      print(f"   - Total Tests: {metrics['total']}")
+                      print(f"   - Passed: {metrics['passed']}")
+                      print(f"   - Completion: {metrics['completion_pct']}%")
+                  else:
+                      print(f"⚠️ Notion post failed: {notion_response.status_code}")
+                      print(f"Response: {notion_response.text[:200]}")
+              except Exception as e:
+                  print(f"❌ Error posting to Notion: {e}")
           else:
-              print("⚠️ Notion credentials not configured")
+              print("ℹ️ Notion credentials not configured")
+          
+          # Print summary
+          print("\n" + "="*50)
+          print(f"📊 QA Agent Summary")
+          print(f"   Context: {context_title}")
+          print(f"   Branch: {branch_name}")
+          print(f"   Tests Run: {metrics['total']}")
+          print(f"   Passed: {metrics['passed']}")
+          print(f"   Failed: {metrics['failed']}")
+          print(f"   Success Rate: {metrics['completion_pct']}%")
+          print("="*50)
+          
           PYTHON_SCRIPT
