@@ -308,7 +308,7 @@ jobs:
 
 **{status_emoji} {status_text}**
 
-**Branch:** `{branch_name}` | **Commit:** `{commit_sha}` | **By:** @{actor}
+**Branch:** `{branch_name}` | **Commit:** `{commit_sha}` | **By:** {actor}
 
 ### 📊 Test Results Summary
 
