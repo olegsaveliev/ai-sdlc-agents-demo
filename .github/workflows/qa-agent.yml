@@ -1,21 +1,33 @@
-name: QA Agent - Auto Test Generation
+name: QA Agent - Post-Merge Verification
 
 on:
+  # Run when PR is merged (push to main/master)
+  push:
+    branches:
+      - main
+      - master
+  
+  # Also run on pull requests (before merge)
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, synchronize, reopened]
+  
+  # Allow manual trigger
   workflow_dispatch:
+
 jobs:
   qa-agent:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
       contents: write
+      issues: write
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          fetch-depth: 0
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -24,50 +36,161 @@ jobs:
       
       - name: Install dependencies
         run: |
+          python -m pip install --upgrade pip
           pip install anthropic requests pytest dnspython
+          
+          # Install app dependencies if requirements.txt exists
+          if [ -f "requirements.txt" ]; then
+            echo "📦 Installing from requirements.txt..."
+            pip install -r requirements.txt
+          else
+            echo "ℹ️ No requirements.txt found - may cause test failures"
+          fi
 
       - name: Copy Slack notifications module
         run: |
-          cp slack_notifications.py agents/ || echo "slack_notifications.py not found in root"
+          if [ -f "slack_notifications.py" ]; then
+            mkdir -p agents
+            cp slack_notifications.py agents/
+            echo "✅ Copied slack_notifications.py"
+          else
+            echo "⚠️ slack_notifications.py not found"
+          fi
       
+      - name: Determine execution context
+        id: context
+        run: |
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "stage=pre-merge" >> $GITHUB_OUTPUT
+            echo "pr_number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "is_pr=true" >> $GITHUB_OUTPUT
+            echo "branch=${{ github.head_ref }}" >> $GITHUB_OUTPUT
+            echo "title=Pre-merge validation for PR #${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            echo "stage=post-merge" >> $GITHUB_OUTPUT
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            
+            # Try to find the merged PR number from commit message
+            COMMIT_MSG="${{ github.event.head_commit.message }}"
+            PR_NUM=$(echo "$COMMIT_MSG" | grep -oP '(?<=#)\d+(?=\))' | head -1 || echo "")
+            
+            if [ -n "$PR_NUM" ]; then
+              echo "pr_number=$PR_NUM" >> $GITHUB_OUTPUT
+              echo "title=Post-merge verification for PR #$PR_NUM" >> $GITHUB_OUTPUT
+            else
+              echo "pr_number=" >> $GITHUB_OUTPUT
+              echo "title=Post-merge verification on ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "stage=manual" >> $GITHUB_OUTPUT
+            echo "is_pr=false" >> $GITHUB_OUTPUT
+            echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "pr_number=" >> $GITHUB_OUTPUT
+            echo "title=Manual QA run on ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "sha=${{ github.sha }}" >> $GITHUB_OUTPUT
+          echo "actor=${{ github.actor }}" >> $GITHUB_OUTPUT
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Display context
+        run: |
+          echo "================================================"
+          echo "🔍 QA Agent Execution Context"
+          echo "================================================"
+          echo "Stage: ${{ steps.context.outputs.stage }}"
+          echo "Branch: ${{ steps.context.outputs.branch }}"
+          echo "Title: ${{ steps.context.outputs.title }}"
+          echo "PR Number: ${{ steps.context.outputs.pr_number }}"
+          echo "Commit SHA: ${{ steps.context.outputs.sha }}"
+          echo "Triggered by: ${{ steps.context.outputs.actor }}"
+          echo "================================================"
       
       - name: Run QA Agent
-        if: github.event.pull_request.number
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
+          BRANCH_NAME: ${{ steps.context.outputs.branch }}
+          STAGE: ${{ steps.context.outputs.stage }}
         run: |
-          python agents/qa_agent.py
+          echo "🤖 Running QA Agent..."
+          echo "Stage: $STAGE"
+          echo "Branch: $BRANCH_NAME"
+          
+          if [ -f "agents/qa_agent.py" ]; then
+            python agents/qa_agent.py
+            echo "✅ QA Agent completed"
+          else
+            echo "⚠️ agents/qa_agent.py not found"
+            echo "This is normal if you don't have a QA agent script"
+          fi
       
       - name: Run Generated Tests
+        id: run_tests
         continue-on-error: true
         run: |
           if [ -f "tests/test_generated.py" ]; then
+            echo "🧪 Running generated tests..."
             export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-            pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1 || true
+            pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1
+            TEST_EXIT_CODE=$?
+            echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+            
+            if [ $TEST_EXIT_CODE -eq 0 ]; then
+              echo "✅ All tests passed!"
+            else
+              echo "⚠️ Some tests failed (exit code: $TEST_EXIT_CODE)"
+            fi
           else
-            echo "No tests generated" > test_results.txt
+            echo "ℹ️ No test file found at tests/test_generated.py" > test_results.txt
+            echo "This is expected if tests haven't been generated yet"
+            echo "exit_code=0" >> $GITHUB_OUTPUT
           fi
       
-      - name: Post to GitHub and Notion
+      - name: Run Existing Tests (if any)
+        id: run_existing_tests
+        continue-on-error: true
+        run: |
+          # Check if there are other test files
+          if [ -d "tests" ] && [ -n "$(find tests -name 'test_*.py' -not -name 'test_generated.py')" ]; then
+            echo "🧪 Running existing test suite..."
+            export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+            pytest tests/ -v --tb=short > existing_test_results.txt 2>&1 || true
+            echo "✅ Existing tests executed"
+          else
+            echo "ℹ️ No existing test files found" > existing_test_results.txt
+          fi
+      
+      - name: Post Results
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
+          IS_PR: ${{ steps.context.outputs.is_pr }}
+          BRANCH_NAME: ${{ steps.context.outputs.branch }}
+          STAGE: ${{ steps.context.outputs.stage }}
+          TITLE: ${{ steps.context.outputs.title }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          COMMIT_SHA: ${{ steps.context.outputs.sha }}
+          ACTOR: ${{ steps.context.outputs.actor }}
+          TEST_EXIT_CODE: ${{ steps.run_tests.outputs.exit_code }}
         run: |
           python3 << 'PYTHON_SCRIPT'
           import os
           import requests
           import re
+          import sys
+          from datetime import datetime
           
           # Read test results
           try:
@@ -75,6 +198,13 @@ jobs:
                   test_results = f.read()
           except FileNotFoundError:
               test_results = "No test results available"
+          
+          # Read existing test results
+          try:
+              with open('existing_test_results.txt', 'r') as f:
+                  existing_results = f.read()
+          except FileNotFoundError:
+              existing_results = "No existing test results"
           
           # Parse test metrics
           def parse_test_metrics(results):
@@ -118,59 +248,124 @@ jobs:
               
               return metrics
           
-          metrics = parse_test_metrics(test_results)
+          generated_metrics = parse_test_metrics(test_results)
+          existing_metrics = parse_test_metrics(existing_results)
           
-          # Get PR details
-          pr_number = os.environ['PR_NUMBER']
+          # Get environment variables
           repo = os.environ['GITHUB_REPOSITORY']
           token = os.environ['GITHUB_TOKEN']
+          pr_number = os.environ.get('PR_NUMBER', '')
+          is_pr = os.environ.get('IS_PR', 'false')
+          branch_name = os.environ.get('BRANCH_NAME', 'unknown')
+          stage = os.environ.get('STAGE', 'unknown')
+          title = os.environ.get('TITLE', 'QA Report')
+          commit_sha = os.environ.get('COMMIT_SHA', '')[:7]
+          actor = os.environ.get('ACTOR', 'unknown')
+          test_exit_code = os.environ.get('TEST_EXIT_CODE', '0')
           
           headers = {
               "Authorization": f"Bearer {token}",
               "Accept": "application/vnd.github+json"
           }
           
-          pr_response = requests.get(
-              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
-              headers=headers
-          )
-          pr_title = pr_response.json().get('title', 'Unknown PR')
+          # Determine status
+          total_tests = generated_metrics['total'] + existing_metrics['total']
+          total_passed = generated_metrics['passed'] + existing_metrics['passed']
+          total_failed = generated_metrics['failed'] + existing_metrics['failed']
+          total_errors = generated_metrics['errors'] + existing_metrics['errors']
           
-          # Post to GitHub
-          gh_comment = f"""## 🧪 QA Agent Report
-          
-          **Automated Test Generation Complete**
-          
-          ### 📊 Test Summary
-          - **Total Tests:** {metrics['total']}
-          - **Passed:** ✅ {metrics['passed']}
-          - **Failed:** ❌ {metrics['failed']}
-          - **Errors:** 🔴 {metrics['errors']}
-          - **Completion:** {metrics['completion_pct']}%
-          
-          <details>
-          <summary>📋 Detailed Results</summary>
-          
-          ```
-          {test_results[:2000]}
-          ```
-          </details>
-          
-          ---
-          *Generated by QA Agent*"""
-          
-          gh_response = requests.post(
-              f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-              headers=headers,
-              json={"body": gh_comment}
-          )
-          
-          if gh_response.status_code == 201:
-              print("✅ Posted to GitHub successfully!")
+          if total_tests == 0:
+              status_emoji = "⏭️"
+              status_text = "No tests found"
+              overall_pct = 0
+          elif total_failed == 0 and total_errors == 0:
+              status_emoji = "✅"
+              status_text = "All tests passed"
+              overall_pct = 100.0
           else:
-              print(f"⚠️ GitHub post failed: {gh_response.status_code}")
+              overall_pct = round((total_passed / total_tests) * 100, 1) if total_tests > 0 else 0
+              if overall_pct >= 80:
+                  status_emoji = "⚠️"
+                  status_text = f"Some failures ({overall_pct}% passed)"
+              else:
+                  status_emoji = "❌"
+                  status_text = f"Many failures ({overall_pct}% passed)"
           
-          # Post to Notion with detailed metrics
+          # Stage-specific emoji and description
+          if stage == "post-merge":
+              stage_emoji = "🔀"
+              stage_desc = "Post-Merge Verification"
+          elif stage == "pre-merge":
+              stage_emoji = "🔍"
+              stage_desc = "Pre-Merge Validation"
+          else:
+              stage_emoji = "🎯"
+              stage_desc = "Manual QA Run"
+          
+          # Post to GitHub (PR comment for pre-merge, issue comment for post-merge if PR exists)
+          if pr_number and (is_pr == 'true' or stage == 'post-merge'):
+              gh_comment = f"""## {stage_emoji} {stage_desc}
+
+**{status_emoji} {status_text}**
+
+**Branch:** `{branch_name}` | **Commit:** `{commit_sha}` | **By:** @{actor}
+
+### 📊 Test Results Summary
+
+#### Generated Tests
+- **Total:** {generated_metrics['total']}
+- **Passed:** ✅ {generated_metrics['passed']}
+- **Failed:** ❌ {generated_metrics['failed']}
+- **Errors:** 🔴 {generated_metrics['errors']}
+- **Success Rate:** {generated_metrics['completion_pct']}%
+
+#### Existing Tests
+- **Total:** {existing_metrics['total']}
+- **Passed:** ✅ {existing_metrics['passed']}
+- **Failed:** ❌ {existing_metrics['failed']}
+- **Errors:** 🔴 {existing_metrics['errors']}
+- **Success Rate:** {existing_metrics['completion_pct']}%
+
+### 📈 Overall: {total_passed}/{total_tests} tests passed ({overall_pct}%)
+
+<details>
+<summary>📋 Generated Test Details</summary>
+
+```
+{test_results[:1500]}
+```
+</details>
+
+<details>
+<summary>📋 Existing Test Details</summary>
+
+```
+{existing_results[:1500]}
+```
+</details>
+
+---
+*{stage_desc} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}*"""
+              
+              try:
+                  gh_response = requests.post(
+                      f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                      headers=headers,
+                      json={"body": gh_comment},
+                      timeout=30
+                  )
+                  
+                  if gh_response.status_code == 201:
+                      print(f"✅ Posted comment to PR/Issue #{pr_number}")
+                  else:
+                      print(f"⚠️ GitHub comment failed: {gh_response.status_code}")
+                      print(f"Response: {gh_response.text[:200]}")
+              except Exception as e:
+                  print(f"❌ Error posting to GitHub: {e}")
+          else:
+              print(f"ℹ️ No PR number available - skipping GitHub comment")
+          
+          # Post to Notion
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
@@ -185,34 +380,46 @@ jobs:
               
               test_breakdown = []
               
+              # Header
               test_breakdown.append({
                   "object": "block",
                   "type": "heading_2",
                   "heading_2": {
-                      "rich_text": [{"type": "text", "text": {"content": "📊 Test Execution Summary"}}]
+                      "rich_text": [{"type": "text", "text": {"content": f"{stage_emoji} {stage_desc}"}}]
                   }
               })
               
-              metrics_text = f"Total: {metrics['total']} | Passed: {metrics['passed']} | Failed: {metrics['failed']} | Completion: {metrics['completion_pct']}%"
+              # Overall summary
+              summary_text = f"{status_text} | Total: {total_tests} | Passed: {total_passed} | Failed: {total_failed} | Success: {overall_pct}%"
               test_breakdown.append({
                   "object": "block",
                   "type": "callout",
                   "callout": {
-                      "rich_text": [{"type": "text", "text": {"content": metrics_text}}],
-                      "icon": {"emoji": "📈"}
+                      "rich_text": [{"type": "text", "text": {"content": summary_text}}],
+                      "icon": {"emoji": status_emoji}
                   }
               })
               
-              if metrics['test_names']:
+              # Context
+              test_breakdown.append({
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                      "rich_text": [{"type": "text", "text": {"content": f"Branch: {branch_name} | Commit: {commit_sha} | Stage: {stage} | By: {actor}"}}]
+                  }
+              })
+              
+              # Generated tests section
+              if generated_metrics['total'] > 0:
                   test_breakdown.append({
                       "object": "block",
                       "type": "heading_3",
                       "heading_3": {
-                          "rich_text": [{"type": "text", "text": {"content": "Test Cases Executed"}}]
+                          "rich_text": [{"type": "text", "text": {"content": "Generated Tests"}}]
                       }
                   })
                   
-                  for test in metrics['test_names'][:20]:
+                  for test in generated_metrics['test_names'][:20]:
                       emoji = "✅" if test['status'] == "PASSED" else "❌" if test['status'] == "FAILED" else "🔴"
                       test_text = f"{emoji} {test['name']} - {test['status']}"
                       
@@ -224,20 +431,43 @@ jobs:
                           }
                       })
               
+              # Existing tests section
+              if existing_metrics['total'] > 0:
+                  test_breakdown.append({
+                      "object": "block",
+                      "type": "heading_3",
+                      "heading_3": {
+                          "rich_text": [{"type": "text", "text": {"content": "Existing Tests"}}]
+                      }
+                  })
+                  
+                  for test in existing_metrics['test_names'][:20]:
+                      emoji = "✅" if test['status'] == "PASSED" else "❌" if test['status'] == "FAILED" else "🔴"
+                      test_text = f"{emoji} {test['name']} - {test['status']}"
+                      
+                      test_breakdown.append({
+                          "object": "block",
+                          "type": "bulleted_list_item",
+                          "bulleted_list_item": {
+                              "rich_text": [{"type": "text", "text": {"content": test_text}}]
+                          }
+                      })
+              
+              # Raw output
               test_breakdown.append({
                   "object": "block",
                   "type": "heading_3",
                   "heading_3": {
-                      "rich_text": [{"type": "text", "text": {"content": "Raw Test Output"}}]
+                      "rich_text": [{"type": "text", "text": {"content": "Test Output"}}]
                   }
               })
               
-              truncated_results = test_results[:1500] if len(test_results) > 1500 else test_results
+              combined_output = f"=== Generated Tests ===\n{test_results[:700]}\n\n=== Existing Tests ===\n{existing_results[:700]}"
               test_breakdown.append({
                   "object": "block",
                   "type": "code",
                   "code": {
-                      "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
+                      "rich_text": [{"type": "text", "text": {"content": combined_output}}],
                       "language": "plain text"
                   }
               })
@@ -246,13 +476,10 @@ jobs:
                   "parent": {"database_id": notion_db},
                   "properties": {
                       "Name": {
-                          "title": [{"text": {"content": f"QA Report: {pr_title[:70]} ({metrics['completion_pct']}%)"}}]
+                          "title": [{"text": {"content": f"{status_emoji} {title[:70]}"}}]
                       },
                       "Agent Type": {
                           "select": {"name": "QA"}
-                      },
-                      "Issue/PR Number": {
-                          "number": int(pr_number)
                       },
                       "Status": {
                           "select": {"name": "Complete"}
@@ -263,14 +490,14 @@ jobs:
                           "object": "block",
                           "type": "heading_2",
                           "heading_2": {
-                              "rich_text": [{"type": "text", "text": {"content": "🧪 QA Test Report"}}]
+                              "rich_text": [{"type": "text", "text": {"content": f"🧪 {stage_desc}"}}]
                           }
                       },
                       {
                           "object": "block",
                           "type": "paragraph",
                           "paragraph": {
-                              "rich_text": [{"type": "text", "text": {"content": f"PR: {pr_title}"}}]
+                              "rich_text": [{"type": "text", "text": {"content": title}}]
                           }
                       },
                       {
@@ -281,20 +508,53 @@ jobs:
                   ] + test_breakdown
               }
               
-              notion_response = requests.post(
-                  "https://api.notion.com/v1/pages",
-                  headers=notion_headers,
-                  json=notion_data
-              )
+              # Add PR number if available
+              if pr_number:
+                  try:
+                      notion_data["properties"]["Issue/PR Number"] = {
+                          "number": int(pr_number)
+                      }
+                  except ValueError:
+                      pass
               
-              if notion_response.status_code == 200:
-                  print("✅ Posted to Notion successfully!")
-                  print(f"   - Total Tests: {metrics['total']}")
-                  print(f"   - Passed: {metrics['passed']}")
-                  print(f"   - Completion: {metrics['completion_pct']}%")
-              else:
-                  print(f"⚠️ Notion post failed: {notion_response.status_code}")
-                  print(notion_response.text)
+              try:
+                  notion_response = requests.post(
+                      "https://api.notion.com/v1/pages",
+                      headers=notion_headers,
+                      json=notion_data,
+                      timeout=30
+                  )
+                  
+                  if notion_response.status_code == 200:
+                      print("✅ Posted to Notion successfully!")
+                  else:
+                      print(f"⚠️ Notion post failed: {notion_response.status_code}")
+                      print(f"Response: {notion_response.text[:200]}")
+              except Exception as e:
+                  print(f"❌ Error posting to Notion: {e}")
           else:
-              print("⚠️ Notion credentials not configured")
+              print("ℹ️ Notion credentials not configured")
+          
+          # Print comprehensive summary
+          print("\n" + "="*70)
+          print(f"{stage_emoji} {stage_desc}")
+          print("="*70)
+          print(f"Title: {title}")
+          print(f"Branch: {branch_name}")
+          print(f"Commit: {commit_sha}")
+          print(f"Triggered by: {actor}")
+          print(f"Status: {status_text}")
+          print("-"*70)
+          print(f"Generated Tests: {generated_metrics['passed']}/{generated_metrics['total']} passed ({generated_metrics['completion_pct']}%)")
+          print(f"Existing Tests:  {existing_metrics['passed']}/{existing_metrics['total']} passed ({existing_metrics['completion_pct']}%)")
+          print(f"OVERALL:         {total_passed}/{total_tests} passed ({overall_pct}%)")
+          print("="*70)
+          
           PYTHON_SCRIPT
+      
+      - name: Set workflow status
+        if: steps.run_tests.outputs.exit_code != '0'
+        run: |
+          echo "⚠️ Tests failed with exit code: ${{ steps.run_tests.outputs.exit_code }}"
+          echo "Check the test results above for details"
+          exit 1
