@@ -1,16 +1,9 @@
 name: QA Agent - Auto Test Generation
 
 on:
-
-on:
   pull_request:
-    branches: [ main ]
-  push:
-    branches: [ '**' ]
-  #pull_request:
-    #types: [opened, synchronize]
+    types: [opened, synchronize]
   workflow_dispatch:
-
 jobs:
   qa-agent:
     runs-on: ubuntu-latest
