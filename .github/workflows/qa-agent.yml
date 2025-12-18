@@ -25,7 +25,8 @@ jobs:
       
       - name: Install dependencies
         run: |
-          pip install anthropic requests pytest dnspython
+          pip install anthropic requests pytest dnspython flask
+
 
       - name: Copy Slack notifications module
         run: |
