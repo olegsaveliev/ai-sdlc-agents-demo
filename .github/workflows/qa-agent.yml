@@ -1,8 +1,10 @@
 name: QA Agent - Auto Test Generation
 
 on:
-  pull_request:
-    types: [opened, synchronize]
+  push:
+    branches-ignore:
+      - main
+      - develop
   workflow_dispatch:
 jobs:
   qa-agent:
@@ -14,8 +16,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+      with:
+         ref: ${{ github.ref }}
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -32,13 +34,13 @@ jobs:
       
       
       - name: Run QA Agent
-        if: github.event.pull_request.number
+        #if: github.event.pull_request.number
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          #PR_NUMBER: ${{ github.event.pull_request.number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
