@@ -1,14 +1,8 @@
 name: QA Agent - Auto Test Generation
 
 on:
-  push:
-    branches-ignore:
-      - main
-      - develop
-
   pull_request:
-    types:
-      - opened
+    types: [opened, synchronize]
   workflow_dispatch:
 jobs:
   qa-agent:
@@ -20,8 +14,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      with:
-         ref: ${{ github.event.pull_request.head.ref || github.ref }}
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       
       - name: Set up Python
         uses: actions/setup-python@v5
