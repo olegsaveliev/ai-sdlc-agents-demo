@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize]
   workflow_dispatch:
+
 jobs:
   qa-agent:
     runs-on: ubuntu-latest
@@ -14,8 +15,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        #with:
-          #ref: ${{ github.event.pull_request.head.ref || github.ref }}
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
       
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -25,16 +26,27 @@ jobs:
       - name: Install dependencies
         run: |
           pip install anthropic requests pytest dnspython
+          
+          # Install app dependencies if requirements.txt exists
+          if [ -f "requirements.txt" ]; then
+            echo "📦 Installing from requirements.txt..."
+            pip install -r requirements.txt
+          fi
 
       - name: Copy Slack notifications module
         run: |
-          cp slack_notifications.py agents/ || echo "slack_notifications.py not found in root"
+          if [ -f "slack_notifications.py" ]; then
+            mkdir -p agents
+            cp slack_notifications.py agents/
+            echo "✅ Copied slack_notifications.py"
+          else
+            echo "⚠️ slack_notifications.py not found"
+          fi
       
-      
-      - name: Run QA Agent
+      - name: Run QA Agent (without Slack notification)
         if: github.event.pull_request.number
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }} 
+          # Remove SLACK_WEBHOOK_URL so QA agent doesn't send notification yet
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -43,17 +55,181 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           NOTION_METRICS_DB_ID: ${{ secrets.NOTION_METRICS_DB_ID }}
         run: |
+          echo "🤖 Running QA Agent (test generation only)..."
           python agents/qa_agent.py
       
       - name: Run Generated Tests
+        id: run_tests
         continue-on-error: true
         run: |
           if [ -f "tests/test_generated.py" ]; then
+            echo "🧪 Running generated tests..."
             export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-            pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1 || true
+            
+            set +e
+            pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1
+            TEST_EXIT_CODE=$?
+            set -e
+            
+            echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
+            
+            # Show results
+            echo "--- Test Results ---"
+            cat test_results.txt
+            echo "--------------------"
+            
+            # Parse results
+            PASSED=$(grep -oP '\d+(?= passed)' test_results.txt | head -1 || echo "0")
+            FAILED=$(grep -oP '\d+(?= failed)' test_results.txt | head -1 || echo "0")
+            ERRORS=$(grep -oP '\d+(?= error)' test_results.txt | head -1 || echo "0")
+            
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+            echo "failed=$FAILED" >> $GITHUB_OUTPUT
+            echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+            
+            TOTAL=$((PASSED + FAILED + ERRORS))
+            echo "total=$TOTAL" >> $GITHUB_OUTPUT
+            
+            if [ $TOTAL -gt 0 ]; then
+              SUCCESS_RATE=$(awk "BEGIN {printf \"%.1f\", ($PASSED / $TOTAL) * 100}")
+            else
+              SUCCESS_RATE="0.0"
+            fi
+            echo "success_rate=$SUCCESS_RATE" >> $GITHUB_OUTPUT
+            
+            echo "📊 Results: $PASSED passed, $FAILED failed, $ERRORS errors (Total: $TOTAL)"
           else
-            echo "No tests generated" > test_results.txt
+            echo "ℹ️ No test file found" > test_results.txt
+            echo "exit_code=0" >> $GITHUB_OUTPUT
+            echo "passed=0" >> $GITHUB_OUTPUT
+            echo "failed=0" >> $GITHUB_OUTPUT
+            echo "errors=0" >> $GITHUB_OUTPUT
+            echo "total=0" >> $GITHUB_OUTPUT
+            echo "success_rate=0.0" >> $GITHUB_OUTPUT
           fi
+      
+      - name: Send Slack Notification with Results
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PASSED: ${{ steps.run_tests.outputs.passed }}
+          FAILED: ${{ steps.run_tests.outputs.failed }}
+          ERRORS: ${{ steps.run_tests.outputs.errors }}
+          TOTAL: ${{ steps.run_tests.outputs.total }}
+          SUCCESS_RATE: ${{ steps.run_tests.outputs.success_rate }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "⚠️ SLACK_WEBHOOK_URL not configured - skipping notification"
+            exit 0
+          fi
+          
+          python3 << 'SLACK_SCRIPT'
+          import os
+          import requests
+          import json
+          
+          webhook_url = os.environ['SLACK_WEBHOOK_URL']
+          pr_number = os.environ['PR_NUMBER']
+          pr_title = os.environ.get('PR_TITLE', 'Unknown PR')
+          passed = int(os.environ.get('PASSED', 0))
+          failed = int(os.environ.get('FAILED', 0))
+          errors = int(os.environ.get('ERRORS', 0))
+          total = int(os.environ.get('TOTAL', 0))
+          success_rate = float(os.environ.get('SUCCESS_RATE', 0.0))
+          
+          # Determine status
+          if total == 0:
+              status = "⏭️ No Tests"
+              color = "#808080"
+          elif failed == 0 and errors == 0:
+              status = "✅ All Passed"
+              color = "#36a64f"
+          elif success_rate >= 80:
+              status = "⚠️ Some Failures"
+              color = "#ff9900"
+          else:
+              status = "❌ Many Failures"
+              color = "#ff0000"
+          
+          # Build Slack message
+          message = {
+              "attachments": [
+                  {
+                      "color": color,
+                      "blocks": [
+                          {
+                              "type": "header",
+                              "text": {
+                                  "type": "plain_text",
+                                  "text": f"🧪 QA Agent Complete: PR #{pr_number}"
+                              }
+                          },
+                          {
+                              "type": "section",
+                              "text": {
+                                  "type": "mrkdwn",
+                                  "text": f"*{pr_title}*\n{status}"
+                              }
+                          },
+                          {
+                              "type": "section",
+                              "fields": [
+                                  {
+                                      "type": "mrkdwn",
+                                      "text": f"*Tests Generated:*\n📝 {total} tests"
+                                  },
+                                  {
+                                      "type": "mrkdwn",
+                                      "text": f"*Success Rate:*\n📊 {success_rate}%"
+                                  },
+                                  {
+                                      "type": "mrkdwn",
+                                      "text": f"*Passed:*\n✅ {passed}"
+                                  },
+                                  {
+                                      "type": "mrkdwn",
+                                      "text": f"*Failed:*\n❌ {failed}"
+                                  }
+                              ]
+                          },
+                          {
+                              "type": "actions",
+                              "elements": [
+                                  {
+                                      "type": "button",
+                                      "text": {
+                                          "type": "plain_text",
+                                          "text": "View Pull Request"
+                                      },
+                                      "url": f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')}/pull/{pr_number}"
+                                  }
+                              ]
+                          }
+                      ]
+                  }
+              ]
+          }
+          
+          try:
+              response = requests.post(
+                  webhook_url,
+                  json=message,
+                  timeout=10
+              )
+              
+              if response.status_code == 200:
+                  print("✅ Slack notification sent successfully!")
+                  print(f"   Status: {status}")
+                  print(f"   Tests: {passed}/{total} passed ({success_rate}%)")
+              else:
+                  print(f"⚠️ Slack notification failed: {response.status_code}")
+                  print(f"Response: {response.text}")
+          except Exception as e:
+              print(f"❌ Error sending Slack notification: {e}")
+          
+          SLACK_SCRIPT
       
       - name: Post to GitHub and Notion
         if: always()
@@ -63,6 +239,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          PASSED: ${{ steps.run_tests.outputs.passed }}
+          FAILED: ${{ steps.run_tests.outputs.failed }}
+          ERRORS: ${{ steps.run_tests.outputs.errors }}
+          TOTAL: ${{ steps.run_tests.outputs.total }}
+          SUCCESS_RATE: ${{ steps.run_tests.outputs.success_rate }}
         run: |
           python3 << 'PYTHON_SCRIPT'
           import os
@@ -76,49 +257,12 @@ jobs:
           except FileNotFoundError:
               test_results = "No test results available"
           
-          # Parse test metrics
-          def parse_test_metrics(results):
-              metrics = {
-                  'total': 0,
-                  'passed': 0,
-                  'failed': 0,
-                  'errors': 0,
-                  'skipped': 0,
-                  'completion_pct': 0,
-                  'test_names': []
-              }
-              
-              passed_match = re.search(r'(\d+) passed', results)
-              failed_match = re.search(r'(\d+) failed', results)
-              error_match = re.search(r'(\d+) error', results)
-              skipped_match = re.search(r'(\d+) skipped', results)
-              
-              if passed_match:
-                  metrics['passed'] = int(passed_match.group(1))
-              if failed_match:
-                  metrics['failed'] = int(failed_match.group(1))
-              if error_match:
-                  metrics['errors'] = int(error_match.group(1))
-              if skipped_match:
-                  metrics['skipped'] = int(skipped_match.group(1))
-              
-              metrics['total'] = metrics['passed'] + metrics['failed'] + metrics['errors'] + metrics['skipped']
-              
-              if metrics['total'] > 0:
-                  metrics['completion_pct'] = round((metrics['passed'] / metrics['total']) * 100, 1)
-              
-              test_pattern = r'(test_\w+)\s+(PASSED|FAILED|ERROR|SKIPPED)'
-              for match in re.finditer(test_pattern, results):
-                  test_name = match.group(1)
-                  status = match.group(2)
-                  metrics['test_names'].append({
-                      'name': test_name,
-                      'status': status
-                  })
-              
-              return metrics
-          
-          metrics = parse_test_metrics(test_results)
+          # Get metrics from environment
+          passed = int(os.environ.get('PASSED', 0))
+          failed = int(os.environ.get('FAILED', 0))
+          errors = int(os.environ.get('ERRORS', 0))
+          total = int(os.environ.get('TOTAL', 0))
+          success_rate = float(os.environ.get('SUCCESS_RATE', 0.0))
           
           # Get PR details
           pr_number = os.environ['PR_NUMBER']
@@ -130,47 +274,45 @@ jobs:
               "Accept": "application/vnd.github+json"
           }
           
-          pr_response = requests.get(
-              f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
-              headers=headers
-          )
-          pr_title = pr_response.json().get('title', 'Unknown PR')
+          try:
+              pr_response = requests.get(
+                  f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
+                  headers=headers,
+                  timeout=10
+              )
+              pr_title = pr_response.json().get('title', 'Unknown PR')
+          except:
+              pr_title = 'Unknown PR'
           
           # Post to GitHub
-          gh_comment = f"""## 🧪 QA Agent Report
+          gh_comment = "## 🧪 QA Agent Report\n\n"
+          gh_comment += "**Automated Test Generation Complete**\n\n"
+          gh_comment += "### 📊 Test Summary\n"
+          gh_comment += f"- **Total Tests:** {total}\n"
+          gh_comment += f"- **Passed:** ✅ {passed}\n"
+          gh_comment += f"- **Failed:** ❌ {failed}\n"
+          gh_comment += f"- **Errors:** 🔴 {errors}\n"
+          gh_comment += f"- **Success Rate:** {success_rate}%\n\n"
+          gh_comment += "<details>\n<summary>📋 Detailed Results</summary>\n\n```\n"
+          gh_comment += test_results[:2000] + "\n```\n</details>\n\n"
+          gh_comment += "---\n*Generated by QA Agent*"
           
-          **Automated Test Generation Complete**
+          try:
+              gh_response = requests.post(
+                  f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
+                  headers=headers,
+                  json={"body": gh_comment},
+                  timeout=30
+              )
+              
+              if gh_response.status_code == 201:
+                  print("✅ Posted to GitHub successfully!")
+              else:
+                  print(f"⚠️ GitHub post failed: {gh_response.status_code}")
+          except Exception as e:
+              print(f"❌ Error posting to GitHub: {e}")
           
-          ### 📊 Test Summary
-          - **Total Tests:** {metrics['total']}
-          - **Passed:** ✅ {metrics['passed']}
-          - **Failed:** ❌ {metrics['failed']}
-          - **Errors:** 🔴 {metrics['errors']}
-          - **Completion:** {metrics['completion_pct']}%
-          
-          <details>
-          <summary>📋 Detailed Results</summary>
-          
-          ```
-          {test_results[:2000]}
-          ```
-          </details>
-          
-          ---
-          *Generated by QA Agent*"""
-          
-          gh_response = requests.post(
-              f"https://api.github.com/repos/{repo}/issues/{pr_number}/comments",
-              headers=headers,
-              json={"body": gh_comment}
-          )
-          
-          if gh_response.status_code == 201:
-              print("✅ Posted to GitHub successfully!")
-          else:
-              print(f"⚠️ GitHub post failed: {gh_response.status_code}")
-          
-          # Post to Notion with detailed metrics
+          # Post to Notion (if configured)
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
@@ -183,70 +325,11 @@ jobs:
                   "Notion-Version": "2022-06-28"
               }
               
-              test_breakdown = []
-              
-              test_breakdown.append({
-                  "object": "block",
-                  "type": "heading_2",
-                  "heading_2": {
-                      "rich_text": [{"type": "text", "text": {"content": "📊 Test Execution Summary"}}]
-                  }
-              })
-              
-              metrics_text = f"Total: {metrics['total']} | Passed: {metrics['passed']} | Failed: {metrics['failed']} | Completion: {metrics['completion_pct']}%"
-              test_breakdown.append({
-                  "object": "block",
-                  "type": "callout",
-                  "callout": {
-                      "rich_text": [{"type": "text", "text": {"content": metrics_text}}],
-                      "icon": {"emoji": "📈"}
-                  }
-              })
-              
-              if metrics['test_names']:
-                  test_breakdown.append({
-                      "object": "block",
-                      "type": "heading_3",
-                      "heading_3": {
-                          "rich_text": [{"type": "text", "text": {"content": "Test Cases Executed"}}]
-                      }
-                  })
-                  
-                  for test in metrics['test_names'][:20]:
-                      emoji = "✅" if test['status'] == "PASSED" else "❌" if test['status'] == "FAILED" else "🔴"
-                      test_text = f"{emoji} {test['name']} - {test['status']}"
-                      
-                      test_breakdown.append({
-                          "object": "block",
-                          "type": "bulleted_list_item",
-                          "bulleted_list_item": {
-                              "rich_text": [{"type": "text", "text": {"content": test_text}}]
-                          }
-                      })
-              
-              test_breakdown.append({
-                  "object": "block",
-                  "type": "heading_3",
-                  "heading_3": {
-                      "rich_text": [{"type": "text", "text": {"content": "Raw Test Output"}}]
-                  }
-              })
-              
-              truncated_results = test_results[:1500] if len(test_results) > 1500 else test_results
-              test_breakdown.append({
-                  "object": "block",
-                  "type": "code",
-                  "code": {
-                      "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
-                      "language": "plain text"
-                  }
-              })
-              
               notion_data = {
                   "parent": {"database_id": notion_db},
                   "properties": {
                       "Name": {
-                          "title": [{"text": {"content": f"QA Report: {pr_title[:70]} ({metrics['completion_pct']}%)"}}]
+                          "title": [{"text": {"content": f"QA Report: {pr_title[:70]} ({success_rate}%)"}}]
                       },
                       "Agent Type": {
                           "select": {"name": "QA"}
@@ -257,44 +340,23 @@ jobs:
                       "Status": {
                           "select": {"name": "Complete"}
                       }
-                  },
-                  "children": [
-                      {
-                          "object": "block",
-                          "type": "heading_2",
-                          "heading_2": {
-                              "rich_text": [{"type": "text", "text": {"content": "🧪 QA Test Report"}}]
-                          }
-                      },
-                      {
-                          "object": "block",
-                          "type": "paragraph",
-                          "paragraph": {
-                              "rich_text": [{"type": "text", "text": {"content": f"PR: {pr_title}"}}]
-                          }
-                      },
-                      {
-                          "object": "block",
-                          "type": "divider",
-                          "divider": {}
-                      }
-                  ] + test_breakdown
+                  }
               }
               
-              notion_response = requests.post(
-                  "https://api.notion.com/v1/pages",
-                  headers=notion_headers,
-                  json=notion_data
-              )
-              
-              if notion_response.status_code == 200:
-                  print("✅ Posted to Notion successfully!")
-                  print(f"   - Total Tests: {metrics['total']}")
-                  print(f"   - Passed: {metrics['passed']}")
-                  print(f"   - Completion: {metrics['completion_pct']}%")
-              else:
-                  print(f"⚠️ Notion post failed: {notion_response.status_code}")
-                  print(notion_response.text)
-          else:
-              print("⚠️ Notion credentials not configured")
+              try:
+                  notion_response = requests.post(
+                      "https://api.notion.com/v1/pages",
+                      headers=notion_headers,
+                      json=notion_data,
+                      timeout=30
+                  )
+                  
+                  if notion_response.status_code == 200:
+                      print(f"✅ Posted to Notion successfully!")
+                      print(f"   Tests: {passed}/{total} passed")
+                  else:
+                      print(f"⚠️ Notion post failed: {notion_response.status_code}")
+              except Exception as e:
+                  print(f"❌ Error posting to Notion: {e}")
+          
           PYTHON_SCRIPT
