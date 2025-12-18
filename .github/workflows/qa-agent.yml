@@ -304,48 +304,29 @@ jobs:
           
           # Post to GitHub (PR comment for pre-merge, issue comment for post-merge if PR exists)
           if pr_number and (is_pr == 'true' or stage == 'post-merge'):
-              gh_comment = f"""## {stage_emoji} {stage_desc}
-
-**{status_emoji} {status_text}**
-
-**Branch:** `{branch_name}` | **Commit:** `{commit_sha}` | **By:** {actor}
-
-### 📊 Test Results Summary
-
-#### Generated Tests
-- **Total:** {generated_metrics['total']}
-- **Passed:** ✅ {generated_metrics['passed']}
-- **Failed:** ❌ {generated_metrics['failed']}
-- **Errors:** 🔴 {generated_metrics['errors']}
-- **Success Rate:** {generated_metrics['completion_pct']}%
-
-#### Existing Tests
-- **Total:** {existing_metrics['total']}
-- **Passed:** ✅ {existing_metrics['passed']}
-- **Failed:** ❌ {existing_metrics['failed']}
-- **Errors:** 🔴 {existing_metrics['errors']}
-- **Success Rate:** {existing_metrics['completion_pct']}%
-
-### 📈 Overall: {total_passed}/{total_tests} tests passed ({overall_pct}%)
-
-<details>
-<summary>📋 Generated Test Details</summary>
-
-```
-{test_results[:1500]}
-```
-</details>
-
-<details>
-<summary>📋 Existing Test Details</summary>
-
-```
-{existing_results[:1500]}
-```
-</details>
-
----
-*{stage_desc} • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}*"""
+              # Build comment using string concatenation to avoid YAML parsing issues
+              gh_comment = "## " + stage_emoji + " " + stage_desc + "\n\n"
+              gh_comment += "**" + status_emoji + " " + status_text + "**\n\n"
+              gh_comment += "**Branch:** `" + branch_name + "` | **Commit:** `" + commit_sha + "` | **By:** " + actor + "\n\n"
+              gh_comment += "### 📊 Test Results Summary\n\n"
+              gh_comment += "#### Generated Tests\n"
+              gh_comment += "- **Total:** " + str(generated_metrics['total']) + "\n"
+              gh_comment += "- **Passed:** ✅ " + str(generated_metrics['passed']) + "\n"
+              gh_comment += "- **Failed:** ❌ " + str(generated_metrics['failed']) + "\n"
+              gh_comment += "- **Errors:** 🔴 " + str(generated_metrics['errors']) + "\n"
+              gh_comment += "- **Success Rate:** " + str(generated_metrics['completion_pct']) + "%\n\n"
+              gh_comment += "#### Existing Tests\n"
+              gh_comment += "- **Total:** " + str(existing_metrics['total']) + "\n"
+              gh_comment += "- **Passed:** ✅ " + str(existing_metrics['passed']) + "\n"
+              gh_comment += "- **Failed:** ❌ " + str(existing_metrics['failed']) + "\n"
+              gh_comment += "- **Errors:** 🔴 " + str(existing_metrics['errors']) + "\n"
+              gh_comment += "- **Success Rate:** " + str(existing_metrics['completion_pct']) + "%\n\n"
+              gh_comment += "### 📈 Overall: " + str(total_passed) + "/" + str(total_tests) + " tests passed (" + str(overall_pct) + "%)\n\n"
+              gh_comment += "<details>\n<summary>📋 Generated Test Details</summary>\n\n```\n"
+              gh_comment += test_results[:1500] + "\n```\n</details>\n\n"
+              gh_comment += "<details>\n<summary>📋 Existing Test Details</summary>\n\n```\n"
+              gh_comment += existing_results[:1500] + "\n```\n</details>\n\n"
+              gh_comment += "---\n*" + stage_desc + " • " + datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC') + "*"
               
               try:
                   gh_response = requests.post(
