@@ -130,14 +130,26 @@ jobs:
           import requests
           import json
           
-          webhook_url = os.environ['SLACK_WEBHOOK_URL']
-          pr_number = os.environ['PR_NUMBER']
+          webhook_url = os.environ.get('SLACK_WEBHOOK_URL')
+          if not webhook_url:
+              print("⚠️ No Slack webhook URL - skipping")
+              exit(0)
+          
+          pr_number = os.environ.get('PR_NUMBER', '0')
           pr_title = os.environ.get('PR_TITLE', 'Unknown PR')
-          passed = int(os.environ.get('PASSED', 0))
-          failed = int(os.environ.get('FAILED', 0))
-          errors = int(os.environ.get('ERRORS', 0))
-          total = int(os.environ.get('TOTAL', 0))
-          success_rate = float(os.environ.get('SUCCESS_RATE', 0.0))
+          
+          # Safe integer conversion with defaults
+          passed = int(os.environ.get('PASSED', '0') or '0')
+          failed = int(os.environ.get('FAILED', '0') or '0')
+          errors = int(os.environ.get('ERRORS', '0') or '0')
+          total = int(os.environ.get('TOTAL', '0') or '0')
+          
+          # Safe float conversion
+          success_rate_str = os.environ.get('SUCCESS_RATE', '0.0') or '0.0'
+          try:
+              success_rate = float(success_rate_str)
+          except ValueError:
+              success_rate = 0.0
           
           # Determine status
           if total == 0:
@@ -257,12 +269,17 @@ jobs:
           except FileNotFoundError:
               test_results = "No test results available"
           
-          # Get metrics from environment
-          passed = int(os.environ.get('PASSED', 0))
-          failed = int(os.environ.get('FAILED', 0))
-          errors = int(os.environ.get('ERRORS', 0))
-          total = int(os.environ.get('TOTAL', 0))
-          success_rate = float(os.environ.get('SUCCESS_RATE', 0.0))
+          # Get metrics from environment with safe defaults
+          passed = int(os.environ.get('PASSED', '0') or '0')
+          failed = int(os.environ.get('FAILED', '0') or '0')
+          errors = int(os.environ.get('ERRORS', '0') or '0')
+          total = int(os.environ.get('TOTAL', '0') or '0')
+          
+          success_rate_str = os.environ.get('SUCCESS_RATE', '0.0') or '0.0'
+          try:
+              success_rate = float(success_rate_str)
+          except ValueError:
+              success_rate = 0.0
           
           # Get PR details
           pr_number = os.environ['PR_NUMBER']
@@ -358,5 +375,11 @@ jobs:
                       print(f"⚠️ Notion post failed: {notion_response.status_code}")
               except Exception as e:
                   print(f"❌ Error posting to Notion: {e}")
+          
+          print("\n" + "="*60)
+          print("📊 Summary")
+          print(f"   Total: {total} | Passed: {passed} | Failed: {failed} | Errors: {errors}")
+          print(f"   Success Rate: {success_rate}%")
+          print("="*60)
           
           PYTHON_SCRIPT
