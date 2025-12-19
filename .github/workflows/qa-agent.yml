@@ -260,7 +260,7 @@ jobs:
           python3 << 'PYTHON_SCRIPT'
           import os
           import requests
-          import re
+          from datetime import datetime
           
           # Read test results
           try:
@@ -291,6 +291,7 @@ jobs:
               "Accept": "application/vnd.github+json"
           }
           
+          # Get PR title
           try:
               pr_response = requests.get(
                   f"https://api.github.com/repos/{repo}/pulls/{pr_number}",
@@ -329,12 +330,12 @@ jobs:
           except Exception as e:
               print(f"❌ Error posting to GitHub: {e}")
           
-          # Post to Notion (if configured)
+          # Post to Notion (if configured) - WITH CONTENT!
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
           if notion_token and notion_db:
-              print("📝 Posting to Notion...")
+              print("📝 Posting to Notion with full content...")
               
               notion_headers = {
                   "Authorization": f"Bearer {notion_token}",
@@ -342,6 +343,228 @@ jobs:
                   "Notion-Version": "2022-06-28"
               }
               
+              # Build content blocks for page body
+              content_blocks = []
+              
+              # Header
+              content_blocks.append({
+                  "object": "block",
+                  "type": "heading_2",
+                  "heading_2": {
+                      "rich_text": [{"type": "text", "text": {"content": "🧪 QA Test Report"}}]
+                  }
+              })
+              
+              # PR info
+              content_blocks.append({
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                      "rich_text": [{"type": "text", "text": {"content": f"Pull Request: {pr_title}"}}]
+                  }
+              })
+              
+              # GitHub link
+              pr_url = f"https://github.com/{repo}/pull/{pr_number}"
+              content_blocks.append({
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                      "rich_text": [
+                          {"type": "text", "text": {"content": "View PR: "}},
+                          {"type": "text", "text": {"content": pr_url, "link": {"url": pr_url}}}
+                      ]
+                  }
+              })
+              
+              # Divider
+              content_blocks.append({
+                  "object": "block",
+                  "type": "divider",
+                  "divider": {}
+              })
+              
+              # Test Summary Header
+              content_blocks.append({
+                  "object": "block",
+                  "type": "heading_3",
+                  "heading_3": {
+                      "rich_text": [{"type": "text", "text": {"content": "📊 Test Summary"}}]
+                  }
+              })
+              
+              # Summary callout with color based on results
+              if failed == 0 and errors == 0 and total > 0:
+                  callout_color = "green"
+                  callout_emoji = "✅"
+              elif success_rate >= 80:
+                  callout_color = "yellow"
+                  callout_emoji = "⚠️"
+              elif total == 0:
+                  callout_color = "gray"
+                  callout_emoji = "ℹ️"
+              else:
+                  callout_color = "red"
+                  callout_emoji = "❌"
+              
+              summary_text = f"{callout_emoji} Total: {total} | Passed: {passed} | Failed: {failed} | Errors: {errors} | Success Rate: {success_rate}%"
+              content_blocks.append({
+                  "object": "block",
+                  "type": "callout",
+                  "callout": {
+                      "rich_text": [{"type": "text", "text": {"content": summary_text}}],
+                      "icon": {"emoji": "📈"},
+                      "color": callout_color
+                  }
+              })
+              
+              # Test breakdown header
+              content_blocks.append({
+                  "object": "block",
+                  "type": "heading_3",
+                  "heading_3": {
+                      "rich_text": [{"type": "text", "text": {"content": "Test Results Breakdown"}}]
+                  }
+              })
+              
+              # Passed tests
+              if passed > 0:
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "bulleted_list_item",
+                      "bulleted_list_item": {
+                          "rich_text": [{"type": "text", "text": {"content": f"✅ Passed: {passed} test{'s' if passed != 1 else ''}"}}],
+                          "color": "green"
+                      }
+                  })
+              
+              # Failed tests
+              if failed > 0:
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "bulleted_list_item",
+                      "bulleted_list_item": {
+                          "rich_text": [{"type": "text", "text": {"content": f"❌ Failed: {failed} test{'s' if failed != 1 else ''}"}}],
+                          "color": "red"
+                      }
+                  })
+              
+              # Errors
+              if errors > 0:
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "bulleted_list_item",
+                      "bulleted_list_item": {
+                          "rich_text": [{"type": "text", "text": {"content": f"🔴 Errors: {errors} test{'s' if errors != 1 else ''}"}}],
+                          "color": "red"
+                      }
+                  })
+              
+              # No tests case
+              if total == 0:
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "callout",
+                      "callout": {
+                          "rich_text": [{"type": "text", "text": {"content": "No tests were generated or found for this PR"}}],
+                          "icon": {"emoji": "ℹ️"},
+                          "color": "gray"
+                      }
+                  })
+              
+              # Divider before metadata
+              content_blocks.append({
+                  "object": "block",
+                  "type": "divider",
+                  "divider": {}
+              })
+              
+              # Metadata section
+              content_blocks.append({
+                  "object": "block",
+                  "type": "heading_3",
+                  "heading_3": {
+                      "rich_text": [{"type": "text", "text": {"content": "📋 Metadata"}}]
+                  }
+              })
+              
+              # PR Number
+              content_blocks.append({
+                  "object": "block",
+                  "type": "bulleted_list_item",
+                  "bulleted_list_item": {
+                      "rich_text": [
+                          {"type": "text", "text": {"content": "PR Number: "}},
+                          {"type": "text", "text": {"content": f"#{pr_number}", "annotations": {"bold": True}}}
+                      ]
+                  }
+              })
+              
+              # Repository
+              content_blocks.append({
+                  "object": "block",
+                  "type": "bulleted_list_item",
+                  "bulleted_list_item": {
+                      "rich_text": [
+                          {"type": "text", "text": {"content": "Repository: "}},
+                          {"type": "text", "text": {"content": repo, "annotations": {"code": True}}}
+                      ]
+                  }
+              })
+              
+              # Timestamp
+              timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+              content_blocks.append({
+                  "object": "block",
+                  "type": "bulleted_list_item",
+                  "bulleted_list_item": {
+                      "rich_text": [
+                          {"type": "text", "text": {"content": "Generated: "}},
+                          {"type": "text", "text": {"content": timestamp, "annotations": {"italic": True}}}
+                      ]
+                  }
+              })
+              
+              # Test output section (if available)
+              if test_results and test_results != "No test results available":
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "divider",
+                      "divider": {}
+                  })
+                  
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "heading_3",
+                      "heading_3": {
+                          "rich_text": [{"type": "text", "text": {"content": "📄 Test Output"}}]
+                      }
+                  })
+                  
+                  # Truncate test results to fit Notion's limits (2000 chars per block)
+                  truncated_results = test_results[:1800] if len(test_results) > 1800 else test_results
+                  
+                  if len(test_results) > 1800:
+                      content_blocks.append({
+                          "object": "block",
+                          "type": "callout",
+                          "callout": {
+                              "rich_text": [{"type": "text", "text": {"content": "⚠️ Output truncated - view full results on GitHub"}}],
+                              "icon": {"emoji": "⚠️"},
+                              "color": "yellow"
+                          }
+                      })
+                  
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "code",
+                      "code": {
+                          "rich_text": [{"type": "text", "text": {"content": truncated_results}}],
+                          "language": "plain text"
+                      }
+                  })
+              
+              # Create the page with properties AND content
               notion_data = {
                   "parent": {"database_id": notion_db},
                   "properties": {
@@ -357,7 +580,8 @@ jobs:
                       "Status": {
                           "select": {"name": "Complete"}
                       }
-                  }
+                  },
+                  "children": content_blocks
               }
               
               try:
@@ -369,12 +593,16 @@ jobs:
                   )
                   
                   if notion_response.status_code == 200:
-                      print(f"✅ Posted to Notion successfully!")
+                      print(f"✅ Posted to Notion successfully with full content!")
                       print(f"   Tests: {passed}/{total} passed")
+                      print(f"   Content blocks: {len(content_blocks)}")
                   else:
                       print(f"⚠️ Notion post failed: {notion_response.status_code}")
+                      print(f"   Response: {notion_response.text[:500]}")
               except Exception as e:
                   print(f"❌ Error posting to Notion: {e}")
+          else:
+              print("ℹ️ Notion not configured - skipping")
           
           print("\n" + "="*60)
           print("📊 Summary")
