@@ -417,7 +417,7 @@ jobs:
           except Exception as e:
               print(f"❌ Error posting to GitHub: {e}")
           
-          # Post to Notion (if configured) - WITH DETAILED CONTENT!
+          # Post to Notion (if configured) - FIXED VERSION!
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
@@ -518,14 +518,12 @@ jobs:
                   for test in individual_tests[:20]:  # Limit to 20 tests to avoid hitting block limits
                       if 'PASSED' in test:
                           test_name = test.replace('PASSED', '').strip()
+                          # NO ANNOTATIONS in bulleted_list_item!
                           content_blocks.append({
                               "object": "block",
                               "type": "bulleted_list_item",
                               "bulleted_list_item": {
-                                  "rich_text": [
-                                      {"type": "text", "text": {"content": "✅ ", "annotations": {"bold": True}}},
-                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
-                                  ],
+                                  "rich_text": [{"type": "text", "text": {"content": f"✅ {test_name}"}}],
                                   "color": "green"
                               }
                           })
@@ -535,10 +533,7 @@ jobs:
                               "object": "block",
                               "type": "bulleted_list_item",
                               "bulleted_list_item": {
-                                  "rich_text": [
-                                      {"type": "text", "text": {"content": "❌ ", "annotations": {"bold": True}}},
-                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
-                                  ],
+                                  "rich_text": [{"type": "text", "text": {"content": f"❌ {test_name}"}}],
                                   "color": "red"
                               }
                           })
@@ -548,10 +543,7 @@ jobs:
                               "object": "block",
                               "type": "bulleted_list_item",
                               "bulleted_list_item": {
-                                  "rich_text": [
-                                      {"type": "text", "text": {"content": "🔴 ", "annotations": {"bold": True}}},
-                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
-                                  ],
+                                  "rich_text": [{"type": "text", "text": {"content": f"🔴 {test_name}"}}],
                                   "color": "red"
                               }
                           })
@@ -592,24 +584,21 @@ jobs:
               # Parse execution log and add steps
               steps = execution_log.split('Step ')
               for i, step in enumerate(steps[1:], 1):  # Skip first empty element
-                  if step.strip():
+                  if step.strip() and len(content_blocks) < 80:  # Limit blocks
                       step_lines = step.strip().split('\n')
                       step_title = step_lines[0].strip().rstrip(':')
                       
-                      # Add numbered step
+                      # Add numbered step (use paragraph instead of formatted text)
                       content_blocks.append({
                           "object": "block",
                           "type": "paragraph",
                           "paragraph": {
-                              "rich_text": [
-                                  {"type": "text", "text": {"content": f"{i}. ", "annotations": {"bold": True}}},
-                                  {"type": "text", "text": {"content": step_title, "annotations": {"bold": True}}}
-                              ]
+                              "rich_text": [{"type": "text", "text": {"content": f"{i}. {step_title}"}}]
                           }
                       })
                       
                       # Add step details if any (limit to prevent block overflow)
-                      if len(step_lines) > 1 and len(content_blocks) < 80:
+                      if len(step_lines) > 1 and len(content_blocks) < 85:
                           step_content = '\n'.join(step_lines[1:5])  # First 4 detail lines
                           if step_content.strip():
                               content_blocks.append({
@@ -637,15 +626,12 @@ jobs:
                   }
               })
               
-              # PR Number
+              # PR Number (simple text, no annotations)
               content_blocks.append({
                   "object": "block",
                   "type": "bulleted_list_item",
                   "bulleted_list_item": {
-                      "rich_text": [
-                          {"type": "text", "text": {"content": "PR Number: "}},
-                          {"type": "text", "text": {"content": f"#{pr_number}", "annotations": {"bold": True}}}
-                      ]
+                      "rich_text": [{"type": "text", "text": {"content": f"PR Number: #{pr_number}"}}]
                   }
               })
               
@@ -654,10 +640,7 @@ jobs:
                   "object": "block",
                   "type": "bulleted_list_item",
                   "bulleted_list_item": {
-                      "rich_text": [
-                          {"type": "text", "text": {"content": "Repository: "}},
-                          {"type": "text", "text": {"content": repo, "annotations": {"code": True}}}
-                      ]
+                      "rich_text": [{"type": "text", "text": {"content": f"Repository: {repo}"}}]
                   }
               })
               
@@ -667,15 +650,12 @@ jobs:
                   "object": "block",
                   "type": "bulleted_list_item",
                   "bulleted_list_item": {
-                      "rich_text": [
-                          {"type": "text", "text": {"content": "Generated: "}},
-                          {"type": "text", "text": {"content": timestamp, "annotations": {"italic": True}}}
-                      ]
+                      "rich_text": [{"type": "text", "text": {"content": f"Generated: {timestamp}"}}]
                   }
               })
               
               # Test output section (if available and space permits)
-              if test_results and test_results != "No test results available" and len(content_blocks) < 85:
+              if test_results and test_results != "No test results available" and len(content_blocks) < 90:
                   content_blocks.append({
                       "object": "block",
                       "type": "divider",
