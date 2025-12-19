@@ -46,7 +46,6 @@ jobs:
       - name: Run QA Agent (without Slack notification)
         if: github.event.pull_request.number
         env:
-          # Remove SLACK_WEBHOOK_URL so QA agent doesn't send notification yet
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -62,9 +61,37 @@ jobs:
         id: run_tests
         continue-on-error: true
         run: |
+          # Create execution log
+          echo "=== QA Agent Test Execution Log ===" > execution_log.txt
+          echo "Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")" >> execution_log.txt
+          echo "" >> execution_log.txt
+          
           if [ -f "tests/test_generated.py" ]; then
             echo "🧪 Running generated tests..."
             export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+            
+            # Log what we're about to do
+            echo "Step 1: Setting up test environment" >> execution_log.txt
+            echo "  - PYTHONPATH: ${PYTHONPATH}" >> execution_log.txt
+            echo "  - Test file: tests/test_generated.py" >> execution_log.txt
+            echo "" >> execution_log.txt
+            
+            # Show the generated test file content
+            echo "Step 2: Generated test file content" >> execution_log.txt
+            echo "----------------------------------------" >> execution_log.txt
+            cat tests/test_generated.py >> execution_log.txt
+            echo "----------------------------------------" >> execution_log.txt
+            echo "" >> execution_log.txt
+            
+            # List all test functions
+            echo "Step 3: Discovered test functions" >> execution_log.txt
+            grep -n "def test_" tests/test_generated.py >> execution_log.txt || echo "  No test functions found" >> execution_log.txt
+            echo "" >> execution_log.txt
+            
+            # Run pytest with verbose output
+            echo "Step 4: Executing tests with pytest" >> execution_log.txt
+            echo "Command: pytest tests/test_generated.py -v --tb=short" >> execution_log.txt
+            echo "" >> execution_log.txt
             
             set +e
             pytest tests/test_generated.py -v --tb=short > test_results.txt 2>&1
@@ -73,12 +100,36 @@ jobs:
             
             echo "exit_code=$TEST_EXIT_CODE" >> $GITHUB_OUTPUT
             
+            # Log exit code
+            echo "Step 5: Test execution completed" >> execution_log.txt
+            echo "  Exit code: $TEST_EXIT_CODE" >> execution_log.txt
+            if [ $TEST_EXIT_CODE -eq 0 ]; then
+              echo "  Result: ✅ All tests passed" >> execution_log.txt
+            elif [ $TEST_EXIT_CODE -eq 1 ]; then
+              echo "  Result: ⚠️ Some tests failed" >> execution_log.txt
+            else
+              echo "  Result: ❌ Test execution error" >> execution_log.txt
+            fi
+            echo "" >> execution_log.txt
+            
             # Show results
             echo "--- Test Results ---"
             cat test_results.txt
             echo "--------------------"
             
-            # Parse results
+            # Append results to execution log
+            echo "Step 6: Test results" >> execution_log.txt
+            echo "----------------------------------------" >> execution_log.txt
+            cat test_results.txt >> execution_log.txt
+            echo "----------------------------------------" >> execution_log.txt
+            echo "" >> execution_log.txt
+            
+            # Parse individual test results
+            echo "Step 7: Individual test results" >> execution_log.txt
+            grep -E "test_.*PASSED|test_.*FAILED|test_.*ERROR" test_results.txt >> execution_log.txt || echo "  No individual results found" >> execution_log.txt
+            echo "" >> execution_log.txt
+            
+            # Parse summary
             PASSED=$(grep -oP '\d+(?= passed)' test_results.txt | head -1 || echo "0")
             FAILED=$(grep -oP '\d+(?= failed)' test_results.txt | head -1 || echo "0")
             ERRORS=$(grep -oP '\d+(?= error)' test_results.txt | head -1 || echo "0")
@@ -97,9 +148,18 @@ jobs:
             fi
             echo "success_rate=$SUCCESS_RATE" >> $GITHUB_OUTPUT
             
+            # Log summary
+            echo "Step 8: Summary" >> execution_log.txt
+            echo "  Total tests: $TOTAL" >> execution_log.txt
+            echo "  Passed: $PASSED" >> execution_log.txt
+            echo "  Failed: $FAILED" >> execution_log.txt
+            echo "  Errors: $ERRORS" >> execution_log.txt
+            echo "  Success rate: $SUCCESS_RATE%" >> execution_log.txt
+            
             echo "📊 Results: $PASSED passed, $FAILED failed, $ERRORS errors (Total: $TOTAL)"
           else
             echo "ℹ️ No test file found" > test_results.txt
+            echo "No tests were generated" > execution_log.txt
             echo "exit_code=0" >> $GITHUB_OUTPUT
             echo "passed=0" >> $GITHUB_OUTPUT
             echo "failed=0" >> $GITHUB_OUTPUT
@@ -261,6 +321,7 @@ jobs:
           import os
           import requests
           from datetime import datetime
+          import re
           
           # Read test results
           try:
@@ -268,6 +329,13 @@ jobs:
                   test_results = f.read()
           except FileNotFoundError:
               test_results = "No test results available"
+          
+          # Read execution log
+          try:
+              with open('execution_log.txt', 'r') as f:
+                  execution_log = f.read()
+          except FileNotFoundError:
+              execution_log = "No execution log available"
           
           # Get metrics from environment with safe defaults
           passed = int(os.environ.get('PASSED', '0') or '0')
@@ -302,6 +370,12 @@ jobs:
           except:
               pr_title = 'Unknown PR'
           
+          # Extract individual test results
+          individual_tests = []
+          for line in test_results.split('\n'):
+              if '::test_' in line and ('PASSED' in line or 'FAILED' in line or 'ERROR' in line):
+                  individual_tests.append(line.strip())
+          
           # Post to GitHub
           gh_comment = "## 🧪 QA Agent Report\n\n"
           gh_comment += "**Automated Test Generation Complete**\n\n"
@@ -311,6 +385,19 @@ jobs:
           gh_comment += f"- **Failed:** ❌ {failed}\n"
           gh_comment += f"- **Errors:** 🔴 {errors}\n"
           gh_comment += f"- **Success Rate:** {success_rate}%\n\n"
+          
+          # Add individual test results
+          if individual_tests:
+              gh_comment += "### 📝 Individual Test Results\n"
+              for test in individual_tests:
+                  if 'PASSED' in test:
+                      gh_comment += f"- ✅ `{test.replace('PASSED', '').strip()}`\n"
+                  elif 'FAILED' in test:
+                      gh_comment += f"- ❌ `{test.replace('FAILED', '').strip()}`\n"
+                  elif 'ERROR' in test:
+                      gh_comment += f"- 🔴 `{test.replace('ERROR', '').strip()}`\n"
+              gh_comment += "\n"
+          
           gh_comment += "<details>\n<summary>📋 Detailed Results</summary>\n\n```\n"
           gh_comment += test_results[:2000] + "\n```\n</details>\n\n"
           gh_comment += "---\n*Generated by QA Agent*"
@@ -330,12 +417,12 @@ jobs:
           except Exception as e:
               print(f"❌ Error posting to GitHub: {e}")
           
-          # Post to Notion (if configured) - WITH CONTENT!
+          # Post to Notion (if configured) - WITH DETAILED CONTENT!
           notion_token = os.environ.get('NOTION_TOKEN')
           notion_db = os.environ.get('NOTION_DATABASE_ID')
           
           if notion_token and notion_db:
-              print("📝 Posting to Notion with full content...")
+              print("📝 Posting to Notion with full execution details...")
               
               notion_headers = {
                   "Authorization": f"Bearer {notion_token}",
@@ -418,59 +505,121 @@ jobs:
                   }
               })
               
+              # Individual test results section
+              if individual_tests:
+                  content_blocks.append({
+                      "object": "block",
+                      "type": "heading_3",
+                      "heading_3": {
+                          "rich_text": [{"type": "text", "text": {"content": "🔍 Individual Test Results"}}]
+                      }
+                  })
+                  
+                  for test in individual_tests[:20]:  # Limit to 20 tests to avoid hitting block limits
+                      if 'PASSED' in test:
+                          test_name = test.replace('PASSED', '').strip()
+                          content_blocks.append({
+                              "object": "block",
+                              "type": "bulleted_list_item",
+                              "bulleted_list_item": {
+                                  "rich_text": [
+                                      {"type": "text", "text": {"content": "✅ ", "annotations": {"bold": True}}},
+                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
+                                  ],
+                                  "color": "green"
+                              }
+                          })
+                      elif 'FAILED' in test:
+                          test_name = test.replace('FAILED', '').strip()
+                          content_blocks.append({
+                              "object": "block",
+                              "type": "bulleted_list_item",
+                              "bulleted_list_item": {
+                                  "rich_text": [
+                                      {"type": "text", "text": {"content": "❌ ", "annotations": {"bold": True}}},
+                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
+                                  ],
+                                  "color": "red"
+                              }
+                          })
+                      elif 'ERROR' in test:
+                          test_name = test.replace('ERROR', '').strip()
+                          content_blocks.append({
+                              "object": "block",
+                              "type": "bulleted_list_item",
+                              "bulleted_list_item": {
+                                  "rich_text": [
+                                      {"type": "text", "text": {"content": "🔴 ", "annotations": {"bold": True}}},
+                                      {"type": "text", "text": {"content": test_name, "annotations": {"code": True}}}
+                                  ],
+                                  "color": "red"
+                              }
+                          })
+                  
+                  if len(individual_tests) > 20:
+                      content_blocks.append({
+                          "object": "block",
+                          "type": "callout",
+                          "callout": {
+                              "rich_text": [{"type": "text", "text": {"content": f"... and {len(individual_tests) - 20} more tests. See full output below."}}],
+                              "icon": {"emoji": "ℹ️"}
+                          }
+                      })
+              
               # Test breakdown header
+              content_blocks.append({
+                  "object": "block",
+                  "type": "divider",
+                  "divider": {}
+              })
+              
               content_blocks.append({
                   "object": "block",
                   "type": "heading_3",
                   "heading_3": {
-                      "rich_text": [{"type": "text", "text": {"content": "Test Results Breakdown"}}]
+                      "rich_text": [{"type": "text", "text": {"content": "📋 Test Execution Steps"}}]
                   }
               })
               
-              # Passed tests
-              if passed > 0:
-                  content_blocks.append({
-                      "object": "block",
-                      "type": "bulleted_list_item",
-                      "bulleted_list_item": {
-                          "rich_text": [{"type": "text", "text": {"content": f"✅ Passed: {passed} test{'s' if passed != 1 else ''}"}}],
-                          "color": "green"
-                      }
-                  })
+              content_blocks.append({
+                  "object": "block",
+                  "type": "paragraph",
+                  "paragraph": {
+                      "rich_text": [{"type": "text", "text": {"content": "Here's exactly what the QA agent did:"}}]
+                  }
+              })
               
-              # Failed tests
-              if failed > 0:
-                  content_blocks.append({
-                      "object": "block",
-                      "type": "bulleted_list_item",
-                      "bulleted_list_item": {
-                          "rich_text": [{"type": "text", "text": {"content": f"❌ Failed: {failed} test{'s' if failed != 1 else ''}"}}],
-                          "color": "red"
-                      }
-                  })
-              
-              # Errors
-              if errors > 0:
-                  content_blocks.append({
-                      "object": "block",
-                      "type": "bulleted_list_item",
-                      "bulleted_list_item": {
-                          "rich_text": [{"type": "text", "text": {"content": f"🔴 Errors: {errors} test{'s' if errors != 1 else ''}"}}],
-                          "color": "red"
-                      }
-                  })
-              
-              # No tests case
-              if total == 0:
-                  content_blocks.append({
-                      "object": "block",
-                      "type": "callout",
-                      "callout": {
-                          "rich_text": [{"type": "text", "text": {"content": "No tests were generated or found for this PR"}}],
-                          "icon": {"emoji": "ℹ️"},
-                          "color": "gray"
-                      }
-                  })
+              # Parse execution log and add steps
+              steps = execution_log.split('Step ')
+              for i, step in enumerate(steps[1:], 1):  # Skip first empty element
+                  if step.strip():
+                      step_lines = step.strip().split('\n')
+                      step_title = step_lines[0].strip().rstrip(':')
+                      
+                      # Add numbered step
+                      content_blocks.append({
+                          "object": "block",
+                          "type": "paragraph",
+                          "paragraph": {
+                              "rich_text": [
+                                  {"type": "text", "text": {"content": f"{i}. ", "annotations": {"bold": True}}},
+                                  {"type": "text", "text": {"content": step_title, "annotations": {"bold": True}}}
+                              ]
+                          }
+                      })
+                      
+                      # Add step details if any (limit to prevent block overflow)
+                      if len(step_lines) > 1 and len(content_blocks) < 80:
+                          step_content = '\n'.join(step_lines[1:5])  # First 4 detail lines
+                          if step_content.strip():
+                              content_blocks.append({
+                                  "object": "block",
+                                  "type": "quote",
+                                  "quote": {
+                                      "rich_text": [{"type": "text", "text": {"content": step_content[:1000]}}],
+                                      "color": "gray"
+                                  }
+                              })
               
               # Divider before metadata
               content_blocks.append({
@@ -525,8 +674,8 @@ jobs:
                   }
               })
               
-              # Test output section (if available)
-              if test_results and test_results != "No test results available":
+              # Test output section (if available and space permits)
+              if test_results and test_results != "No test results available" and len(content_blocks) < 85:
                   content_blocks.append({
                       "object": "block",
                       "type": "divider",
@@ -537,7 +686,7 @@ jobs:
                       "object": "block",
                       "type": "heading_3",
                       "heading_3": {
-                          "rich_text": [{"type": "text", "text": {"content": "📄 Test Output"}}]
+                          "rich_text": [{"type": "text", "text": {"content": "📄 Full Test Output"}}]
                       }
                   })
                   
@@ -581,7 +730,7 @@ jobs:
                           "select": {"name": "Complete"}
                       }
                   },
-                  "children": content_blocks
+                  "children": content_blocks[:100]  # Notion limit: 100 blocks per request
               }
               
               try:
@@ -593,9 +742,10 @@ jobs:
                   )
                   
                   if notion_response.status_code == 200:
-                      print(f"✅ Posted to Notion successfully with full content!")
+                      print(f"✅ Posted to Notion successfully with execution details!")
                       print(f"   Tests: {passed}/{total} passed")
-                      print(f"   Content blocks: {len(content_blocks)}")
+                      print(f"   Content blocks: {len(content_blocks[:100])}")
+                      print(f"   Individual tests shown: {len(individual_tests)}")
                   else:
                       print(f"⚠️ Notion post failed: {notion_response.status_code}")
                       print(f"   Response: {notion_response.text[:500]}")
