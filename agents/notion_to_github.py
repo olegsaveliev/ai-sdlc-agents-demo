@@ -124,6 +124,41 @@ def create_github_issue(title, description):
         print(f"❌ Error creating GitHub issue: {e}")
         return None
 
+def trigger_ba_agent(issue_number):
+    """Trigger BA Agent workflow using repository_dispatch event"""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        print("⚠️ Cannot trigger BA Agent: Missing credentials")
+        return False
+    
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/dispatches"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
+    }
+    
+    data = {
+        "event_type": "ba-agent-trigger",
+        "client_payload": {
+            "issue_number": issue_number
+        }
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        
+        if response.status_code == 204:
+            print(f"✅ Triggered BA Agent workflow for issue #{issue_number}")
+            return True
+        else:
+            print(f"⚠️ Failed to trigger BA Agent: {response.status_code}")
+            print(f"Response: {response.text}")
+            return False
+    
+    except Exception as e:
+        print(f"⚠️ Error triggering BA Agent: {e}")
+        return False
+
 def update_notion_page(page_id, status, issue_number=None):
     """Update the Notion page status and issue number"""
     if not NOTION_TOKEN:
@@ -195,6 +230,9 @@ def main():
             issue_number = create_github_issue(title, description)
             
             if issue_number:
+                # Trigger BA Agent workflow
+                trigger_ba_agent(issue_number)
+                
                 # Update Notion with issue number and status
                 update_notion_page(page_id, "Analyzed", issue_number)
                 print(f"✅ Page processed successfully! GitHub Issue #{issue_number}")
