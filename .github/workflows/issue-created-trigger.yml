@@ -1,0 +1,31 @@
+name: Issue Created - Trigger BA
+
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  trigger-ba:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if from Notion
+        id: check
+        run: |
+          # Check if issue has "from-notion" label
+          if echo '${{ toJson(github.event.issue.labels) }}' | grep -q "from-notion"; then
+            echo "from_notion=true" >> $GITHUB_OUTPUT
+            echo "ℹ️  Issue created from Notion, BA Agent will be triggered by poller"
+          else
+            echo "from_notion=false" >> $GITHUB_OUTPUT
+            echo "📋 Issue created from GitHub/CLI, triggering BA Agent"
+          fi
+      
+      - name: Trigger BA Agent (only if NOT from Notion)
+        if: steps.check.outputs.from_notion == 'false'
+        run: |
+          curl -X POST \
+            -H "Authorization: token ${{ secrets.PAT_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type":"ba-agent-trigger","client_payload":{"issue_number":${{ github.event.issue.number }}}}'
