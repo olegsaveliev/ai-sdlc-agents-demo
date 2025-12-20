@@ -24,7 +24,7 @@ jobs:
       
       - name: Check for new Notion pages
         env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_TOKEN_TRIGGER: ${{ secrets.NOTION_TOKEN_TRIGGER }}
           NOTION_TRIGGER_DB_ID: ${{ secrets.NOTION_TRIGGER_DB_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
