@@ -2,7 +2,6 @@
 """
 Fi People Application
 Simple application that displays "Fi People" farewell message to users.
-Related to GitHub Issue #73
 """
 
 def display_bye_people():
