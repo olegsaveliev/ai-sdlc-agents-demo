@@ -94,7 +94,7 @@ jobs:
       - name: Deploy to Staging
         run: |
           echo "🚀 Deploying to Staging..."
-          python agents/deploy.py --environment staging
+          python agents/deploy_staging.py --environment staging
       
       - name: Run smoke tests
         run: |
