@@ -3,8 +3,8 @@ name: BA Agent - Requirements to Issues
 on:
   repository_dispatch:
     types: [ba-agent-trigger]
-  issues:
-    types: [opened]
+  #issues:
+    #types: [opened]
   workflow_dispatch:
     inputs:
       issue_number:
