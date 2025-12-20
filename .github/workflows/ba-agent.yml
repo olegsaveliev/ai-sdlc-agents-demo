@@ -31,6 +31,16 @@ jobs:
         run: |
           pip install anthropic requests
       
+      - name: Sync Issue to Notion
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number || github.event.issue.number || github.event.inputs.issue_number }}
+          NOTION_TOKEN_TRIGGER: ${{ secrets.NOTION_TOKEN_TRIGGER }}
+          NOTION_TRIGGER_DB_ID: ${{ secrets.NOTION_TRIGGER_DB_ID }}
+        run: |
+          python agents/sync_issue_to_notion.py
+      
       - name: Run BA Agent
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
