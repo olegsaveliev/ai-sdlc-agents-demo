@@ -9,6 +9,10 @@ NOTION_TRIGGER_DB_ID = os.environ.get('NOTION_TRIGGER_DB_ID')
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 GITHUB_REPO = os.environ.get('GITHUB_REPOSITORY')
 
+# Normalize the database ID (remove dashes if present)
+if NOTION_TRIGGER_DB_ID:
+    NOTION_TRIGGER_DB_ID = NOTION_TRIGGER_DB_ID.replace('-', '')
+
 def get_new_notion_pages():
     """Find Notion pages with Status = 'New'"""
     if not NOTION_TOKEN or not NOTION_TRIGGER_DB_ID:
