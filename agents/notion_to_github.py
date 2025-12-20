@@ -5,13 +5,24 @@ from datetime import datetime
 
 # Configuration
 NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
-NOTION_TRIGGER_DB_ID = os.environ.get('NOTION_TRIGGER_DB_ID')
+NOTION_TRIGGER_DB_ID_RAW = os.environ.get('NOTION_TRIGGER_DB_ID')
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 GITHUB_REPO = os.environ.get('GITHUB_REPOSITORY')
 
-# Normalize the database ID (remove dashes if present)
-if NOTION_TRIGGER_DB_ID:
-    NOTION_TRIGGER_DB_ID = NOTION_TRIGGER_DB_ID.replace('-', '')
+# Format the database ID correctly for Notion API
+# Notion accepts both formats, but we need to handle the conversion properly
+NOTION_TRIGGER_DB_ID = None
+if NOTION_TRIGGER_DB_ID_RAW:
+    # Remove all dashes first
+    clean_id = NOTION_TRIGGER_DB_ID_RAW.replace('-', '').strip()
+    
+    # Convert to UUID format if it's 32 characters (8-4-4-4-12)
+    if len(clean_id) == 32:
+        NOTION_TRIGGER_DB_ID = f"{clean_id[0:8]}-{clean_id[8:12]}-{clean_id[12:16]}-{clean_id[16:20]}-{clean_id[20:32]}"
+    else:
+        NOTION_TRIGGER_DB_ID = NOTION_TRIGGER_DB_ID_RAW
+    
+    print(f"🔧 Database ID formatted: {NOTION_TRIGGER_DB_ID}")
 
 def get_new_notion_pages():
     """Find Notion pages with Status = 'New'"""
@@ -151,7 +162,9 @@ def update_notion_page(page_id, status, issue_number=None):
 
 def main():
     print("🔍 Checking for new Notion pages...")
-    print(f"📊 Database ID: {NOTION_TRIGGER_DB_ID}")
+    print(f"📊 Database ID (raw): {NOTION_TRIGGER_DB_ID_RAW}")
+    print(f"📊 Database ID (normalized): {NOTION_TRIGGER_DB_ID}")
+    print(f"📊 Database ID length: {len(NOTION_TRIGGER_DB_ID) if NOTION_TRIGGER_DB_ID else 0}")
     print(f"📦 Repository: {GITHUB_REPO}")
     
     # Get new pages
