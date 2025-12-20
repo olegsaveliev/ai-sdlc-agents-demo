@@ -94,7 +94,8 @@ def create_github_issue(title, description):
     url = f"https://api.github.com/repos/{GITHUB_REPO}/issues"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json"
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28"
     }
     
     body = description if description else "Created from Notion - awaiting BA analysis"
@@ -110,7 +111,9 @@ def create_github_issue(title, description):
         
         if response.status_code == 201:
             issue_number = response.json()['number']
+            issue_url = response.json()['html_url']
             print(f"✅ Created GitHub issue #{issue_number}")
+            print(f"   URL: {issue_url}")
             return issue_number
         else:
             print(f"❌ Failed to create issue: {response.status_code}")
