@@ -104,6 +104,75 @@ jobs:
           sleep 2
           echo "✅ Smoke tests passed"
       
+      - name: Notify Slack
+        if: always()
+        env:
+          SLACK_WEBHOOK_URL_STAGE: ${{ secrets.SLACK_WEBHOOK_URL_STAGE }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL_STAGE" ]; then
+            echo "⚠️  SLACK_WEBHOOK_URL_STAGE not set, skipping Slack notification"
+            exit 0
+          fi
+          
+          STATUS="${{ job.status }}"
+          if [ "$STATUS" == "success" ]; then
+            COLOR="good"
+            EMOJI="✅"
+            STATUS_TEXT="Successful"
+          else
+            COLOR="danger"
+            EMOJI="❌"
+            STATUS_TEXT="Failed"
+          fi
+          
+          curl -X POST "$SLACK_WEBHOOK_URL_STAGE" \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "attachments": [
+                {
+                  "color": "'"$COLOR"'",
+                  "title": "'"$EMOJI"' Staging Deployment '"$STATUS_TEXT"'",
+                  "fields": [
+                    {
+                      "title": "Environment",
+                      "value": "Staging",
+                      "short": true
+                    },
+                    {
+                      "title": "Status",
+                      "value": "'"$STATUS_TEXT"'",
+                      "short": true
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "<https://github.com/${{ github.repository }}/commit/${{ github.sha }}|'"${GITHUB_SHA:0:7}"'>",
+                      "short": true
+                    },
+                    {
+                      "title": "Branch",
+                      "value": "${{ github.ref_name }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Deployed By",
+                      "value": "${{ github.actor }}",
+                      "short": true
+                    },
+                    {
+                      "title": "URL",
+                      "value": "<https://staging.yourapp.com|staging.yourapp.com>",
+                      "short": true
+                    }
+                  ],
+                  "footer": "GitHub Actions",
+                  "footer_icon": "https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png",
+                  "ts": '"$(date +%s)"'
+                }
+              ]
+            }'
+          
+          echo "✅ Slack notification sent"
+      
       - name: Deployment summary
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
