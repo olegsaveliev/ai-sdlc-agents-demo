@@ -13,6 +13,14 @@ NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
 NOTION_METRICS_DB_ID = os.environ.get('NOTION_METRICS_DB_ID')
 NOTION_TRIGGER_DB_ID = os.environ.get('NOTION_TRIGGER_DB_ID')  # NEW: Database for Notion-triggered issues
 
+# Normalize database IDs (remove dashes if present)
+if NOTION_DATABASE_ID:
+    NOTION_DATABASE_ID = NOTION_DATABASE_ID.replace('-', '')
+if NOTION_METRICS_DB_ID:
+    NOTION_METRICS_DB_ID = NOTION_METRICS_DB_ID.replace('-', '')
+if NOTION_TRIGGER_DB_ID:
+    NOTION_TRIGGER_DB_ID = NOTION_TRIGGER_DB_ID.replace('-', '')
+
 # Metrics tracking
 start_time = time.time()
 tokens_used = 0
