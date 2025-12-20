@@ -4,7 +4,7 @@ import time
 from datetime import datetime
 
 # Configuration
-NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
+NOTION_TOKEN = os.environ.get('NOTION_TOKEN_TRIGGER')  # Separate token for trigger integration
 NOTION_TRIGGER_DB_ID_RAW = os.environ.get('NOTION_TRIGGER_DB_ID')
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 GITHUB_REPO = os.environ.get('GITHUB_REPOSITORY')
