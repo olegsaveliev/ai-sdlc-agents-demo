@@ -8,7 +8,8 @@ ANTHROPIC_API_KEY = os.environ['ANTHROPIC_API_KEY']
 GITHUB_TOKEN = os.environ['GITHUB_TOKEN']
 GITHUB_REPO = os.environ['GITHUB_REPOSITORY']
 ISSUE_NUMBER = os.environ['ISSUE_NUMBER']
-NOTION_TOKEN = os.environ.get('NOTION_TOKEN')
+NOTION_TOKEN = os.environ.get('NOTION_TOKEN')  # Original token for BA results
+NOTION_TOKEN_TRIGGER = os.environ.get('NOTION_TOKEN_TRIGGER')  # Separate token for trigger database
 NOTION_DATABASE_ID = os.environ.get('NOTION_DATABASE_ID')
 NOTION_METRICS_DB_ID = os.environ.get('NOTION_METRICS_DB_ID')
 NOTION_TRIGGER_DB_ID = os.environ.get('NOTION_TRIGGER_DB_ID')  # NEW: Database for Notion-triggered issues
@@ -19,7 +20,9 @@ if NOTION_DATABASE_ID:
 if NOTION_METRICS_DB_ID:
     NOTION_METRICS_DB_ID = NOTION_METRICS_DB_ID.replace('-', '')
 if NOTION_TRIGGER_DB_ID:
-    NOTION_TRIGGER_DB_ID = NOTION_TRIGGER_DB_ID.replace('-', '')
+    clean_id = NOTION_TRIGGER_DB_ID.replace('-', '').strip()
+    if len(clean_id) == 32:
+        NOTION_TRIGGER_DB_ID = f"{clean_id[0:8]}-{clean_id[8:12]}-{clean_id[12:16]}-{clean_id[16:20]}-{clean_id[20:32]}"
 
 # Metrics tracking
 start_time = time.time()
@@ -157,11 +160,11 @@ def post_to_notion(issue_title, issue_number, analysis):
 
 def add_analysis_to_notion_page(page_id, analysis):
     """Append BA analysis to an existing Notion page"""
-    if not NOTION_TOKEN:
+    if not NOTION_TOKEN_TRIGGER:
         return
     
     headers = {
-        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Authorization": f"Bearer {NOTION_TOKEN_TRIGGER}",
         "Content-Type": "application/json",
         "Notion-Version": "2022-06-28"
     }
@@ -221,13 +224,13 @@ def add_analysis_to_notion_page(page_id, analysis):
 
 def update_original_notion_page(analysis):
     """Update the Notion page that triggered this GitHub issue"""
-    if not NOTION_TOKEN or not NOTION_TRIGGER_DB_ID:
+    if not NOTION_TOKEN_TRIGGER or not NOTION_TRIGGER_DB_ID:
         print("⚠️ Notion trigger database not configured, skipping original page update")
         return
     
     try:
         headers = {
-            "Authorization": f"Bearer {NOTION_TOKEN}",
+            "Authorization": f"Bearer {NOTION_TOKEN_TRIGGER}",
             "Content-Type": "application/json",
             "Notion-Version": "2022-06-28"
         }
